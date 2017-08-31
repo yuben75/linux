@@ -6,5 +6,5 @@
  * published by the Free Software Foundation.
  */
 
-#include "am572x-idk.dts"
+#include "am572x-idk-lcd-osd101t2587.dts"
 #include "am572x-idk-jailhouse.dtsi"
