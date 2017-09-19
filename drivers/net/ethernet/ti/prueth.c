@@ -76,7 +76,6 @@ static int debug_level = -1;
 module_param(debug_level, int, 0);
 MODULE_PARM_DESC(debug_level, "PRUETH debug level (NETIF_MSG bits)");
 
-#define EMAC_POLL_WEIGHT	(64) /* Default NAPI poll weight */
 #define EMAC_MAX_PKTLEN		(ETH_HLEN + VLAN_HLEN + ETH_DATA_LEN)
 #define EMAC_MIN_PKTLEN		(60)
 
@@ -121,7 +120,10 @@ enum pruss_ethtype {
 	(PRUETH_IS_SWITCH(p) || PRUETH_HAS_HSR(p) || PRUETH_HAS_PRP(p))
 
 #define PRUETH_RED_TABLE_CHECK_PERIOD	(HZ / 100)
-#define NUM_VLAN_PCP			8
+/* A group of PCPs are mapped to a Queue. This is the size of firmware
+ * array in shared memory
+ */
+#define PCP_GROUP_TO_QUEUE_MAP_SIZE	8
 
 /* In switch mode there are 3 real ports i.e. 3 mac addrs.
  * however Linux sees only the host side port. The other 2 ports
@@ -204,7 +206,6 @@ struct prueth_emac {
 	struct prueth *prueth;
 	struct net_device *ndev;
 	u8 mac_addr[6];
-	struct napi_struct napi;
 	u32 msg_enable;
 
 	int link;
@@ -220,13 +221,9 @@ struct prueth_emac {
 	/* emac mode irqs */
 	int rx_irq;
 	int tx_irq;
-	/* switch & Red mode irqs */
-	int sw_rx_irq;
-	int sw_tx_irq;
 
 	struct prueth_queue_desc __iomem *rx_queue_descs;
 	struct prueth_queue_desc __iomem *tx_queue_descs;
-	struct prueth_queue_desc __iomem *rx_colq_descs;
 	struct prueth_queue_desc __iomem *tx_colq_descs;
 
 	struct port_statistics stats; /* stats holder when i/f is down */
@@ -322,7 +319,6 @@ struct prueth {
 	unsigned int node_table_clear;
 	unsigned int tbl_check_mask;
 	struct timer_list tbl_check_timer;
-	u8 pcp_rxq_map[NUM_VLAN_PCP];
 	struct prueth_mmap_port_cfg_basis mmap_port_cfg_basis[PRUETH_PORT_MAX];
 	struct prueth_mmap_sram_cfg mmap_sram_cfg;
 	struct prueth_mmap_ocmc_cfg mmap_ocmc_cfg;
@@ -1023,29 +1019,19 @@ static struct prueth_col_tx_context_info col_tx_context_infos[PRUETH_PORT_MAX];
 static struct prueth_col_rx_context_info col_rx_context_infos[PRUETH_PORT_MAX];
 static struct prueth_queue_desc queue_descs[PRUETH_PORT_MAX][NUM_QUEUES + 1];
 
-/* VLAN-tag PCP to priority queue map for HSR/PRP/SWITCH.
+/* VLAN-tag PCP to priority queue map for EMAC/Switch/HSR/PRP
  * Index is PCP val.
  *   low  - pcp 0..1 maps to Q4
  *              2..3 maps to Q3
  *              4..5 maps to Q2
  *   high - pcp 6..7 maps to Q1.
  */
-static const unsigned short sw_pcp_tx_priority_queue_map[] = {
+static const unsigned short emac_pcp_tx_priority_queue_map[] = {
 	PRUETH_QUEUE4, PRUETH_QUEUE4,
 	PRUETH_QUEUE3, PRUETH_QUEUE3,
 	PRUETH_QUEUE2, PRUETH_QUEUE2,
 	PRUETH_QUEUE1, PRUETH_QUEUE1,
 };
-
-/* Order of processing of port Rx queues */
-static unsigned int sw_port_rx_priority_queue_ids[] = {
-	PRUETH_QUEUE1,
-	PRUETH_QUEUE2,
-	PRUETH_QUEUE3,
-	PRUETH_QUEUE4
-};
-
-static int sw_num_rx_queues = NUM_QUEUES;
 
 /* Order of processing of port Rx queues */
 static const unsigned int emac_port_rx_priority_queue_ids[][2] = {
@@ -1102,10 +1088,6 @@ static int prueth_sw_hostconfig(struct prueth *prueth)
 	writew(pb->queue_size[PRUETH_QUEUE2], dram + 2);
 	writew(pb->queue_size[PRUETH_QUEUE3], dram + 4);
 	writew(pb->queue_size[PRUETH_QUEUE4], dram + 6);
-
-	dram = dram1_base + pb->col_queue_desc_offset;
-	memcpy_toio(dram, &queue_descs[PRUETH_PORT_QUEUE_HOST][PRUETH_COLQ],
-		    sizeof(queue_descs[PRUETH_PORT_QUEUE_HOST][PRUETH_COLQ]));
 
 	/* queue table */
 	dram = dram1_base + pb->queue1_desc_offset;
@@ -1501,17 +1483,38 @@ static int prueth_emac_config(struct prueth *prueth, struct prueth_emac *emac)
 	return 0;
 }
 
+/* Host rx PCP to priority Queue map,
+ * byte 0 => PRU 0, PCP 0-3 => Q1 (could be any Queue)
+ * byte 1 => PRU 0, PCP 4-7 => Q0 (could be any Queue)
+ * byte 2 => Unused.
+ * byte 3 => Unused.
+ * byte 4 => PRU 1, PCP 0-3 => Q3 (could be any Queue)
+ * byte 5 => PRU 1, PCP 4-7 => Q2 (could be any Queue)
+ * byte 6 => Unused
+ * byte 7 => Unused
+ * queue names below are named 1 based. i.e PRUETH_QUEUE1 is 0,
+ * PRUETH_QUEUE2 is 1 and so forth. Current assumption in
+ * the driver code is that lower the queue number higher the
+ * priority of the queue.
+ */
+u8 sw_pcp_rx_priority_queue_map[PCP_GROUP_TO_QUEUE_MAP_SIZE] = {
+	/* port 1 or PRU 0 */
+	PRUETH_QUEUE2, PRUETH_QUEUE1, 0xff, 0xff,
+	/* port 2 or PRU 1 */
+	PRUETH_QUEUE4, PRUETH_QUEUE3, 0xff, 0xff,
+};
+
 static int prueth_hsr_prp_pcp_rxq_map_config(struct prueth *prueth)
 {
 	void __iomem *sram  = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
-	int i, j, pcp = (NUM_VLAN_PCP / 2);
+	int i, j, pcp = (PCP_GROUP_TO_QUEUE_MAP_SIZE / 2);
 	u32 val;
 
 	for (i = 0; i < 2; i++) {
 		val = 0;
 		for (j = 0; j < pcp; j++)
-			val |= (prueth->pcp_rxq_map[i * pcp + j] << (j * 8));
-
+			val |=
+			(sw_pcp_rx_priority_queue_map[i * pcp + j] << (j * 8));
 		writel(val, sram + QUEUE_2_PCP_MAP_OFFSET + i * 4);
 	}
 
@@ -1798,30 +1801,6 @@ static irqreturn_t emac_tx_hardirq(int irq, void *dev_id)
 
 	if (unlikely(netif_queue_stopped(ndev)))
 		netif_wake_queue(ndev);
-
-	return IRQ_HANDLED;
-}
-
-/**
- * emac_rx_hardirq - EMAC Rx interrupt handler
- * @irq: interrupt number
- * @dev_id: pointer to net_device
- *
- * EMAC Interrupt handler - we only schedule NAPI and not process any packets
- * here.
- *
- * Returns interrupt handled condition
- */
-static irqreturn_t emac_rx_hardirq(int irq, void *dev_id)
-{
-	struct net_device *ndev = (struct net_device *)dev_id;
-	struct prueth_emac *emac = netdev_priv(ndev);
-
-	if (likely(netif_running(ndev))) {
-		/* disable Rx system event */
-		disable_irq_nosync(emac->rx_irq);
-		napi_schedule(&emac->napi);
-	}
 
 	return IRQ_HANDLED;
 }
@@ -2117,6 +2096,7 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 	if (buffer_wrapped) { /* wrapped around buffer */
 		int bytes = (buffer_desc_count - read_block) * ICSS_BLOCK_SIZE;
 		int remaining;
+
 		/* bytes is integral multiple of ICSS_BLOCK_SIZE but
 		 * entire packet may have fit within the last BD
 		 * if pkt_info.length is not integral multiple of
@@ -2146,7 +2126,7 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 	/* send packet up the stack */
 	skb_put(skb, pkt_info.length);
 	skb->protocol = eth_type_trans(skb, ndev);
-	netif_receive_skb(skb);
+	netif_rx(skb);
 
 	/* update stats */
 	ndev->stats.rx_bytes += pkt_info.length;
@@ -2155,9 +2135,10 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 	return 0;
 }
 
-/* get upto quota number of packets */
-static int emac_rx_packets(struct prueth_emac *emac, int quota)
+static irqreturn_t emac_rx_thread(int irq, void *dev_id)
 {
+	struct net_device *ndev = (struct net_device *)dev_id;
+	struct prueth_emac *emac = netdev_priv(ndev);
 	struct prueth_queue_desc __iomem *queue_desc, *colq_desc;
 	const struct prueth_queue_info *rxqueue;
 	struct prueth *prueth;
@@ -2169,7 +2150,7 @@ static int emac_rx_packets(struct prueth_emac *emac, int quota)
 	void __iomem *dram1 = emac->prueth->mem[PRUETH_MEM_DRAM1].va;
 	struct prueth_packet_info pkt_info;
 	struct net_device_stats *ndevstats = &emac->ndev->stats;
-	int i, j, ret, used = 0;
+	int i, j, ret;
 	struct prueth_emac *other_emac;
 	const unsigned int *prio_q_ids;
 	unsigned int q_cnt;
@@ -2178,13 +2159,8 @@ static int emac_rx_packets(struct prueth_emac *emac, int quota)
 
 	prueth = emac->prueth;
 
-	if (PRUETH_HAS_SWITCH(prueth)) {
-		prio_q_ids = &sw_port_rx_priority_queue_ids[0];
-		q_cnt = sw_num_rx_queues;
-	} else {
-		prio_q_ids = emac_port_rx_priority_queue_ids[emac->port_id];
-		q_cnt = emac_num_rx_queues;
-	}
+	prio_q_ids = emac_port_rx_priority_queue_ids[emac->port_id];
+	q_cnt = emac_num_rx_queues;
 
 	/* search host queues for packets */
 	for (j = 0; j < q_cnt; j++) {
@@ -2206,16 +2182,6 @@ static int emac_rx_packets(struct prueth_emac *emac, int quota)
 		if (overflow_cnt > 0) {
 			emac->ndev->stats.rx_over_errors += overflow_cnt;
 
-			/* In SWITCH case, rx qs are shared by both ports,
-			 * probably best thing to do is to inc
-			 * rx_over_errors on both emac for now
-			 */
-			if (PRUETH_HAS_SWITCH(prueth)) {
-				other_emac = prueth->emac[emac->port_id ^ 0x3];
-				other_emac->ndev->stats.rx_over_errors +=
-					overflow_cnt;
-			}
-
 			/* reset to zero */
 			writeb(0, &queue_desc->overflow_cnt);
 		}
@@ -2228,23 +2194,6 @@ static int emac_rx_packets(struct prueth_emac *emac, int quota)
 			/* get packet info from the read buffer descriptor */
 			rd_buf_desc = readl(shared_ram + bd_rd_ptr);
 			parse_packet_info(prueth, rd_buf_desc, &pkt_info);
-
-			if (PRUETH_HAS_SWITCH(prueth)) {
-				if (pkt_info.port == 1) {
-					emac = prueth->emac[PRUETH_PORT_MII0];
-					ndevstats = &emac->ndev->stats;
-				} else if (pkt_info.port == 2) {
-					emac = prueth->emac[PRUETH_PORT_MII1];
-					ndevstats = &emac->ndev->stats;
-				} else {
-					netdev_err(emac->ndev,
-						   "unknown rx port %u in bd 0x%08x\n",
-						   pkt_info.port, rd_buf_desc);
-					/* something wrong. drop all packets */
-					pkt_info.length = 0;
-					rx_err = true;
-				}
-			}
 
 			if (PRUETH_IS_HSR(prueth))
 				emac_max_pktlen = EMAC_MAX_PKTLEN_HSR;
@@ -2275,9 +2224,7 @@ static int emac_rx_packets(struct prueth_emac *emac, int quota)
 				ret = emac_rx_packet(emac, &update_rd_ptr,
 						     pkt_info, rxqueue);
 				if (ret)
-					return ret;
-
-				used++;
+					return IRQ_HANDLED;
 			}
 
 			/* after reading the buffer descriptor we clear it
@@ -2289,25 +2236,9 @@ static int emac_rx_packets(struct prueth_emac *emac, int quota)
 			/* update read pointer in queue descriptor */
 			writew(update_rd_ptr, &queue_desc->rd_ptr);
 			bd_rd_ptr = update_rd_ptr;
-
-			/* if switch and buffer is from colq, update colq
-			 * wr_ptr and clear col status reg bit to indicate
-			 * host has read the pkt. Emac won't go in here as
-			 * shaddow = false
-			 */
-			if (pkt_info.shadow && !rx_err) {
-				colq_desc = emac->rx_colq_descs;
-				writew(colq_desc->rd_ptr, &colq_desc->wr_ptr);
-				writeb(0, dram1 + COLLISION_STATUS_ADDR);
-			}
-
-			/* all we have room for? */
-			if (used >= quota)
-				return used;
 		}
 	}
-
-	return used;
+	return IRQ_HANDLED;
 }
 
 /* get statistics maintained by the PRU firmware into @pstats */
@@ -2355,34 +2286,6 @@ static void emac_lre_set_stats(struct prueth_emac *emac,
 	pstats->duplicate_discard = readl(sram + LRE_DUPLICATE_DISCARD);
 	pstats->transparent_reception = readl(sram + LRE_TRANSPARENT_RECEPTION);
 	memcpy_fromio(sram + LRE_START + 4, pstats, sizeof(*pstats));
-}
-
-/**
- * emac_napi_poll - EMAC NAPI Poll function
- * @ndev: EMAC network adapter
- * @budget: Number of receive packets to process (as told by NAPI layer)
- *
- * NAPI Poll function implemented to process packets as per budget. We check
- * the type of interrupt on the device and accordingly call the TX or RX
- * packet processing functions. We follow the budget for RX processing and
- * also put a cap on number of TX pkts processed through config param. The
- * NAPI schedule function is called if more packets pending.
- *
- * Returns number of packets received (in most cases; else TX pkts - rarely)
- */
-static int emac_napi_poll(struct napi_struct *napi, int budget)
-{
-	struct prueth_emac *emac = container_of(napi, struct prueth_emac, napi);
-	int num_rx_packets;
-
-	num_rx_packets = emac_rx_packets(emac, budget);
-	if (num_rx_packets < budget) {
-		napi_complete(napi);
-
-		enable_irq(emac->rx_irq);
-	}
-
-	return num_rx_packets;
 }
 
 static int sw_emac_set_boot_pru(struct prueth_emac *emac,
@@ -2507,7 +2410,6 @@ static int emac_calculate_queue_offsets(struct prueth *prueth,
 
 	port = prueth_node_port(eth_node);
 
-	/* TODO BEGIN, Probably below has to be moved to ndo_open as well */
 	pb0 = &prueth->mmap_port_cfg_basis[PRUETH_PORT_HOST];
 	pb  = &prueth->mmap_port_cfg_basis[port];
 	switch (port) {
@@ -2515,8 +2417,6 @@ static int emac_calculate_queue_offsets(struct prueth *prueth,
 		if (PRUETH_HAS_SWITCH(prueth)) {
 			emac->rx_queue_descs =
 				dram1 + pb0->queue1_desc_offset;
-			emac->rx_colq_descs  =
-				dram1 + pb0->col_queue_desc_offset;
 			emac->tx_queue_descs =
 				dram1 + pb->queue1_desc_offset;
 			emac->tx_colq_descs  =
@@ -2531,8 +2431,6 @@ static int emac_calculate_queue_offsets(struct prueth *prueth,
 		if (PRUETH_HAS_SWITCH(prueth)) {
 			emac->rx_queue_descs =
 				dram1 + pb0->queue1_desc_offset;
-			emac->rx_colq_descs  =
-				dram1 + pb0->col_queue_desc_offset;
 			emac->tx_queue_descs =
 				dram1 + pb->queue1_desc_offset;
 			emac->tx_colq_descs  =
@@ -2551,34 +2449,37 @@ static int emac_calculate_queue_offsets(struct prueth *prueth,
 	return ret;
 }
 
+/* EMAC/Switch/HSR/PRP defaults. EMAC doesn't have collision queue
+ * which is the last entry
+ */
+static u16 txq_size_defaults[NUM_QUEUES + 1] = {97, 97, 97, 97, 48};
+/* switch/HSR/PRP */
+static u16 sw_rxq_size_defaults[NUM_QUEUES + 1] = {206, 206, 206, 206};
+/* EMAC */
+static u16 emac_rxq_size_defaults[NUM_QUEUES + 1] = {194, 194, 194, 194};
+
 static int prueth_of_get_queue_sizes(struct prueth *prueth,
 				     struct device_node *np,
 				     u16 port)
 {
 	struct prueth_mmap_port_cfg_basis *pb;
-	u16 sw_rxq_size_defaults[NUM_QUEUES + 1]   = {254, 134, 134, 254, 48};
-	u16 emac_rxq_size_defaults[NUM_QUEUES + 1] = {194, 194, 194, 194, 48};
-	u16 txq_size_defaults[NUM_QUEUES + 1]      = { 97,  97,  97,  97, 48};
 	u16 *queue_sizes;
 	int num_queues, i;
 	char *propname;
 
 	if (port == PRUETH_PORT_HOST) {
 		propname = "rx-queue-size";
-		if (PRUETH_HAS_SWITCH(prueth)) {
-			num_queues = NUM_QUEUES + 1;
+		num_queues = NUM_QUEUES;
+		if (PRUETH_HAS_SWITCH(prueth))
 			queue_sizes = sw_rxq_size_defaults;
-		} else {
-			num_queues = NUM_QUEUES;
+		else
 			queue_sizes = emac_rxq_size_defaults;
-		}
 	} else if (port <= PRUETH_PORT_MII1) {
 		propname = "tx-queue-size";
 		queue_sizes = txq_size_defaults;
+		num_queues = NUM_QUEUES;
 		if (PRUETH_HAS_SWITCH(prueth))
 			num_queues = NUM_QUEUES + 1;
-		else
-			num_queues = NUM_QUEUES;
 	} else {
 		return -EINVAL;
 	}
@@ -2597,69 +2498,6 @@ static int prueth_of_get_queue_sizes(struct prueth *prueth,
 		pb->col_queue_size = queue_sizes[i];
 
 	return 0;
-}
-
-static void prueth_of_get_pcp_rxq_map(struct prueth *prueth,
-				      struct device_node *np)
-{
-	struct prueth_mmap_port_cfg_basis *pb;
-	int q, j, next_pcp, ret;
-	u8 rxq_mask = 0;
-
-	ret = of_property_read_u8_array(np, "pcp-rxq-map",
-					prueth->pcp_rxq_map, NUM_VLAN_PCP);
-	if (ret) {
-		/* Construct the default map. If all q sizes are non-zero,
-		 * the default pcp-rxq map will be, with pcp0 lo-to-hi
-		 * (left-to-right), <q4 q4 q3 q3 q2 q2 q1 q1>. If only
-		 * q2 is 0 for example, then the default map would be
-		 * <q4 q4 q4 q4 q3 q3 q1 q1>
-		 */
-		pb = &prueth->mmap_port_cfg_basis[PRUETH_PORT_HOST];
-		/* Start from the highest priority pcp 7 */
-		next_pcp = NUM_VLAN_PCP - 1;
-		for (q = PRUETH_QUEUE1; q <= PRUETH_QUEUE4; q++) {
-			/* Don't map any pcp to q if its size is not
-			 * even enough for min frame size, ie the
-			 * q cannot receive any frame.
-			 */
-			if (pb->queue_size[q] < 2)
-				continue;
-
-			/* Map next_pcp and all lower pcp's to q */
-			for (j = next_pcp; j >= 0; j--)
-				prueth->pcp_rxq_map[j] = q;
-
-			/* Prepare next pcp to map, ie. 2 lower than current
-			 * Thus if there is an eligible queue to map to, all
-			 * pcp's that are at least 2 lower than current one
-			 * will be mapped to that queue.
-			 */
-			next_pcp -= 2;
-		}
-	}
-
-	for (j = 0; j < NUM_VLAN_PCP; j++) {
-		if (prueth->pcp_rxq_map[j] > PRUETH_QUEUE4)
-			prueth->pcp_rxq_map[j] = PRUETH_QUEUE4;
-
-		rxq_mask |= BIT(prueth->pcp_rxq_map[j]);
-	}
-
-	/* make sure the default lowest priority queue
-	 * is included
-	 */
-	rxq_mask |= BIT(PRUETH_QUEUE4);
-
-	/* Update the rx queue ids array */
-	j = 0;
-	for (q = PRUETH_QUEUE1; q <= PRUETH_QUEUE4; q++) {
-		if (rxq_mask & BIT(q)) {
-			sw_port_rx_priority_queue_ids[j] = q;
-			j++;
-		}
-	}
-	sw_num_rx_queues = j;
 }
 
 static u16 port_queue_size(struct prueth *prueth, int p, int q)
@@ -3196,10 +3034,10 @@ static int emac_ndo_open(struct net_device *ndev)
 	struct prueth *prueth = emac->prueth;
 	unsigned long flags = (IRQF_TRIGGER_HIGH | IRQF_ONESHOT);
 	struct device_node *np = prueth->prueth_np;
-	int ret, rx_irq = emac->rx_irq, tx_irq = emac->tx_irq;
 	enum prueth_port port_id = emac->port_id, other_port_id;
 	struct device_node *eth_node = prueth->eth_node[port_id];
 	struct device_node *other_eth_node;
+	int ret;
 
 	/* Check for sanity of feature flag */
 	if (PRUETH_HAS_HSR(prueth) &&
@@ -3223,23 +3061,23 @@ static int emac_ndo_open(struct net_device *ndev)
 		return -EINVAL;
 	}
 
-	if (PRUETH_HAS_SWITCH(prueth)) {
-		flags |= IRQF_SHARED;
-		tx_irq = emac->sw_tx_irq;
-		rx_irq = emac->sw_rx_irq;
-	}
-
-	ret = request_irq(rx_irq, emac_rx_hardirq, flags,
-			  ndev->name, ndev);
+	ret = request_threaded_irq(emac->rx_irq, NULL, emac_rx_thread, flags,
+				   ndev->name, ndev);
 	if (ret) {
 		netdev_err(ndev, "unable to request RX IRQ\n");
 		return ret;
 	}
-	ret = request_irq(tx_irq, emac_tx_hardirq, flags,
-			  ndev->name, ndev);
-	if (ret) {
-		netdev_err(ndev, "unable to request TX IRQ\n");
-		goto free_rx_irq;
+
+	/* Currently switch firmware doesn't implement tx irq. So make it
+	 * conditional to non switch case
+	 */
+	if (!PRUETH_HAS_SWITCH(prueth)) {
+		ret = request_irq(emac->tx_irq, emac_tx_hardirq, flags,
+				  ndev->name, ndev);
+		if (ret) {
+			netdev_err(ndev, "unable to request TX IRQ\n");
+			goto free_rx_irq;
+		}
 	}
 
 	/* set h/w MAC as user might have re-configured */
@@ -3256,16 +3094,20 @@ static int emac_ndo_open(struct net_device *ndev)
 	if (!prueth->emac_configured) {
 		if (PRUETH_HAS_HSR(prueth))
 			prueth->hsr_mode = MODEH;
-		prueth_of_get_queue_sizes(prueth, np, PRUETH_PORT_HOST);
-		prueth_of_get_queue_sizes(prueth, eth_node, port_id);
+		ret = prueth_of_get_queue_sizes(prueth, np, PRUETH_PORT_HOST);
+		if (ret < 0)
+			goto free_irq;
+		ret = prueth_of_get_queue_sizes(prueth, eth_node, port_id);
+		if (ret < 0)
+			goto free_irq;
 		other_port_id = (port_id == PRUETH_PORT_MII0) ?
 				PRUETH_PORT_MII1 : PRUETH_PORT_MII0;
 		other_emac = prueth->emac[other_port_id];
 		other_eth_node = prueth->eth_node[other_port_id];
-		prueth_of_get_queue_sizes(prueth, other_eth_node,
-					  other_port_id);
-		if (PRUETH_HAS_RED(prueth))
-			prueth_of_get_pcp_rxq_map(prueth, np);
+		ret = prueth_of_get_queue_sizes(prueth, other_eth_node,
+						other_port_id);
+		if (ret < 0)
+			goto free_irq;
 
 		prueth_init_mmap_configs(prueth);
 
@@ -3315,18 +3157,9 @@ static int emac_ndo_open(struct net_device *ndev)
 
 	/* start PHY */
 	phy_start(emac->phydev);
-	napi_enable(&emac->napi);
 
 	/* enable the port */
 	prueth_port_enable(prueth, emac->port_id, true);
-
-	if (PRUETH_HAS_RED(prueth))
-		dev_info(&ndev->dev,
-			 "pcp-rxq-map (lo2hi->): %u %u %u %u %u %u %u %u\n",
-			 prueth->pcp_rxq_map[0], prueth->pcp_rxq_map[1],
-			 prueth->pcp_rxq_map[2], prueth->pcp_rxq_map[3],
-			 prueth->pcp_rxq_map[4], prueth->pcp_rxq_map[5],
-			 prueth->pcp_rxq_map[6], prueth->pcp_rxq_map[7]);
 
 	if (netif_msg_drv(emac))
 		dev_notice(&ndev->dev, "started\n");
@@ -3338,9 +3171,10 @@ clean_debugfs:
 		prueth_hsr_prp_debugfs_term(prueth);
 free_irq:
 	mutex_unlock(&prueth->mlock);
-	free_irq(tx_irq, ndev);
+	if (!PRUETH_HAS_SWITCH(prueth))
+		free_irq(emac->tx_irq, ndev);
 free_rx_irq:
-	free_irq(rx_irq, ndev);
+	free_irq(emac->rx_irq, ndev);
 
 	return ret;
 }
@@ -3350,8 +3184,9 @@ static int sw_emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 	struct prueth *prueth = emac->prueth;
 
 	prueth->emac_configured &= ~BIT(emac->port_id);
-	free_irq(emac->sw_tx_irq, emac->ndev);
-	free_irq(emac->sw_rx_irq, emac->ndev);
+	/* disable and free rx irq */
+	free_irq(emac->rx_irq, emac->ndev);
+	disable_irq(emac->rx_irq);
 
 	/* another emac is still in use, don't stop the PRUs */
 	if (prueth->emac_configured)
@@ -3360,9 +3195,6 @@ static int sw_emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 	prueth_hsr_prp_debugfs_term(prueth);
 	rproc_shutdown(prueth->pru0);
 	rproc_shutdown(prueth->pru1);
-	/* disable and free rx and tx interrupts */
-	disable_irq(emac->tx_irq);
-	disable_irq(emac->rx_irq);
 	emac_lre_get_stats(emac, &emac->prueth->lre_stats);
 
 	if (PRUETH_HAS_RED(emac->prueth)) {
@@ -3413,7 +3245,6 @@ static int emac_ndo_stop(struct net_device *ndev)
 
 	/* inform the upper layers. */
 	netif_stop_queue(ndev);
-	napi_disable(&emac->napi);
 	netif_carrier_off(ndev);
 
 	/* stop PHY */
@@ -3444,16 +3275,13 @@ static u16 prueth_get_tx_queue_id(struct prueth *prueth, struct sk_buff *skb)
 	u16 vlan_tci, pcp;
 	int err;
 
-	if (!PRUETH_HAS_SWITCH(prueth))
-		return PRUETH_QUEUE4;
-
 	err = vlan_get_tag(skb, &vlan_tci);
 	if (likely(err))
-		return PRUETH_QUEUE4;
+		pcp = 0;
+	else
+		pcp = (vlan_tci & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT;
 
-	pcp = (vlan_tci & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT;
-
-	return sw_pcp_tx_priority_queue_map[pcp];
+	return emac_pcp_tx_priority_queue_map[pcp];
 }
 
 /**
@@ -3469,12 +3297,11 @@ static u16 prueth_get_tx_queue_id(struct prueth *prueth, struct sk_buff *skb)
 static int emac_ndo_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
 	int ret = 0;
 	u16 qid;
 
 	if (unlikely(!emac->link)) {
-		if (netif_msg_tx_err(emac) && net_ratelimit())
-			netdev_err(ndev, "No link to transmit");
 		ret = -ENOLINK;
 		goto fail_tx;
 	}
@@ -3494,9 +3321,22 @@ static int emac_ndo_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 
 	if (ret) {
 		if (ret != -ENOBUFS && ret != -EBUSY &&
-		    netif_msg_tx_err(emac) && net_ratelimit())
+		    netif_msg_tx_err(emac) && net_ratelimit()) {
 			netdev_err(ndev, "packet queue failed: %d\n", ret);
-		goto fail_tx;
+			goto fail_tx;
+		} else {
+			/* out of buffer or collision. stop queue and
+			 * return NETDEV_TX_BUSY. Core will re-send the
+			 * packet when queue is woke up by tx interrupt.
+			 * Right now we don't have tx interrupt generated
+			 * for switch firmware. So return NETDEV_TX_BUSY
+			 * for now and change it later once support is
+			 * available .
+			 */
+			if (!PRUETH_HAS_SWITCH(prueth))
+				netif_stop_queue(ndev);
+			return NETDEV_TX_BUSY;
+		}
 	}
 
 	ndev->stats.tx_packets++;
@@ -3508,7 +3348,8 @@ static int emac_ndo_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 fail_tx:
 	/* error */
 	ndev->stats.tx_dropped++;
-	return NETDEV_TX_BUSY;
+	dev_kfree_skb_any(skb);
+	return NETDEV_TX_OK;
 }
 
 /**
@@ -3974,23 +3815,6 @@ static int prueth_netdev_init(struct prueth *prueth,
 		goto free;
 	}
 
-	if (PRUETH_HAS_SWITCH(prueth)) {
-		emac->sw_rx_irq = of_irq_get_byname(eth_node, "red-rx");
-		if (emac->sw_rx_irq < 0) {
-			ret = emac->sw_rx_irq;
-			if (ret != -EPROBE_DEFER)
-				dev_err(prueth->dev, "could not get switch rx irq\n");
-			goto free;
-		}
-		emac->sw_tx_irq = of_irq_get_byname(eth_node, "red-tx");
-		if (emac->sw_tx_irq < 0) {
-			ret = emac->sw_tx_irq;
-			if (ret != -EPROBE_DEFER)
-				dev_err(prueth->dev, "could not get switch tx irq\n");
-			goto free;
-		}
-	}
-
 	emac->msg_enable = netif_msg_init(debug_level, PRUETH_EMAC_DEBUG);
 	spin_lock_init(&emac->lock);
 	/* get mac address from DT and set private and netdev addr */
@@ -4046,8 +3870,6 @@ static int prueth_netdev_init(struct prueth *prueth,
 	ndev->netdev_ops = &emac_netdev_ops;
 	ndev->ethtool_ops = &emac_ethtool_ops;
 
-	netif_napi_add(ndev, &emac->napi, emac_napi_poll, EMAC_POLL_WEIGHT);
-
 	return 0;
 
 free:
@@ -4075,7 +3897,6 @@ static void prueth_netdev_exit(struct prueth *prueth,
 
 	phy_disconnect(emac->phydev);
 
-	netif_napi_del(&emac->napi);
 	free_netdev(emac->ndev);
 	prueth->emac[port] = NULL;
 }
