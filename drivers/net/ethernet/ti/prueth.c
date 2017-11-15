@@ -159,6 +159,7 @@ enum prueth_port_queue_id {
 	PRUETH_PORT_QUEUE_MAX,
 };
 
+#define NUM_RX_QUEUES	(NUM_QUEUES / 2)
 /* Each port queue has 4 queues and 1 collision queue */
 enum prueth_queue_id {
 	PRUETH_QUEUE1 = 0,
@@ -230,8 +231,14 @@ struct prueth_emac {
 	u32 tx_collisions;
 	u32 tx_collision_drops;
 	u32 rx_overflows;
+	u32 tx_packet_counts[NUM_QUEUES];
+	u32 rx_packet_counts[NUM_RX_QUEUES];
 
 	spinlock_t lock;	/* serialize access */
+#ifdef	CONFIG_DEBUG_FS
+	struct dentry *root_dir;
+	struct dentry *stats_file;
+#endif
 };
 
 struct prueth_mmap_port_cfg_basis {
@@ -391,6 +398,94 @@ void prueth_set_reg(struct prueth *prueth, enum prueth_mem region,
 }
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
+/* prueth_queue_stats_show - Formats and print prueth queue stats
+ */
+static int
+prueth_queue_stats_show(struct seq_file *sfp, void *data)
+{
+	struct prueth_emac *emac = (struct prueth_emac *)sfp->private;
+
+	seq_printf(sfp,
+		   "   TxQ-0    TxQ-1    TxQ-2    TxQ-3    ");
+	if (emac->port_id == PRUETH_PORT_MII0)
+		seq_printf(sfp,
+			   "RxQ-0    RxQ-1\n");
+	else
+		seq_printf(sfp,
+			   "RxQ-2    RxQ-3\n");
+	seq_printf(sfp,
+		   "=====================================================\n");
+
+	seq_printf(sfp, "%8d %8d %8d %8d %8d %8d\n",
+		   emac->tx_packet_counts[PRUETH_QUEUE1],
+		   emac->tx_packet_counts[PRUETH_QUEUE2],
+		   emac->tx_packet_counts[PRUETH_QUEUE3],
+		   emac->tx_packet_counts[PRUETH_QUEUE4],
+		   emac->rx_packet_counts[PRUETH_QUEUE1],
+		   emac->rx_packet_counts[PRUETH_QUEUE2]);
+
+	return 0;
+}
+
+/* prueth_queue_stats_fops - Open the prueth queue stats file
+ *
+ * Description:
+ * This routine opens a debugfs file for prueth queue stats
+ */
+static int
+prueth_queue_stats_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, prueth_queue_stats_show,
+			   inode->i_private);
+}
+
+static const struct file_operations prueth_emac_stats_fops = {
+	.owner	= THIS_MODULE,
+	.open	= prueth_queue_stats_open,
+	.read	= seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+/* prueth_debugfs_init - create  debugfs file for displaying queue stats
+ *
+ * Description:
+ * When debugfs is configured this routine dump the rx_packet_counts and
+ * tx_packet_counts in the emac structures
+ */
+
+static int prueth_debugfs_init(struct prueth_emac *emac)
+{
+	int rc = -1;
+	struct dentry *de;
+	char name[32];
+
+	memset(name, 0, sizeof(name));
+	sprintf(name, "prueth-");
+	strncat(name, emac->ndev->name, sizeof(name) - 1);
+	de = debugfs_create_dir(name, NULL);
+
+	if (!de) {
+		netdev_err(emac->ndev,
+			   "Cannot create debugfs dir name %s\n",
+			   name);
+		return rc;
+	}
+
+	emac->root_dir = de;
+	de = debugfs_create_file("stats", S_IFREG | 0444,
+				 emac->root_dir, emac,
+				 &prueth_emac_stats_fops);
+	if (!de) {
+		netdev_err(emac->ndev, "Cannot create emac stats file\n");
+		return rc;
+	}
+
+	emac->stats_file = de;
+
+	return 0;
+}
+
 static void prueth_hsr_prp_node_show(struct seq_file *sfp,
 				     struct prueth *prueth, u8 index)
 {
@@ -966,6 +1061,21 @@ int prueth_hsr_prp_debugfs_init(struct prueth *prueth)
 	return 0;
 }
 
+/* prueth_debugfs_term - Tear down debugfs intrastructure for emac stats
+ *
+ * Description:
+ * When Debufs is configured this routine removes debugfs file system
+ * elements that are specific to prueth queue stats
+ */
+void
+prueth_debugfs_term(struct prueth_emac *emac)
+{
+	debugfs_remove(emac->stats_file);
+	emac->stats_file = NULL;
+	debugfs_remove(emac->root_dir);
+	emac->root_dir = NULL;
+}
+
 /* prueth_hsr_prp_debugfs_term - Tear down debugfs intrastructure
  *
  * Description:
@@ -1011,6 +1121,14 @@ static inline int prueth_hsr_prp_debugfs_init(struct prueth *prueth)
 
 static inline void prueth_hsr_prp_debugfs_term(struct prueth *prueth)
 {}
+
+static inline int prueth_debugfs_init(struct prueth_emac *emac)
+{
+	return 0;
+}
+
+static inline void prueth_debugfs_term(struct prueth_emac *emac)
+{}
 #endif
 
 static struct prueth_queue_info queue_infos[PRUETH_PORT_QUEUE_MAX][NUM_QUEUES];
@@ -1047,8 +1165,6 @@ static const unsigned int emac_port_rx_priority_queue_ids[][2] = {
 		PRUETH_QUEUE4
 	},
 };
-
-static const int emac_num_rx_queues = (NUM_QUEUES / 2);
 
 static int prueth_sw_hostconfig(struct prueth *prueth)
 {
@@ -1484,24 +1600,27 @@ static int prueth_emac_config(struct prueth *prueth, struct prueth_emac *emac)
 }
 
 /* Host rx PCP to priority Queue map,
- * byte 0 => PRU 0, PCP 0-3 => Q1 (could be any Queue)
- * byte 1 => PRU 0, PCP 4-7 => Q0 (could be any Queue)
- * byte 2 => Unused.
- * byte 3 => Unused.
- * byte 4 => PRU 1, PCP 0-3 => Q3 (could be any Queue)
- * byte 5 => PRU 1, PCP 4-7 => Q2 (could be any Queue)
- * byte 6 => Unused
- * byte 7 => Unused
- * queue names below are named 1 based. i.e PRUETH_QUEUE1 is 0,
- * PRUETH_QUEUE2 is 1 and so forth. Current assumption in
+ * byte 0 => PRU 1, PCP 0-1 => Q3
+ * byte 1 => PRU 1, PCP 2-3 => Q3
+ * byte 2 => PRU 1, PCP 4-5 => Q2
+ * byte 3 => PRU 1, PCP 6-7 => Q2
+ * byte 4 => PRU 0, PCP 0-1 => Q1
+ * byte 5 => PRU 0, PCP 2-3 => Q1
+ * byte 6 => PRU 0, PCP 4-5 => Q0
+ * byte 7 => PRU 0, PCP 6-7 => Q0
+ *
+ * queue names below are named 1 based. i.e PRUETH_QUEUE1 is Q0,
+ * PRUETH_QUEUE2 is Q1 and so forth. Current assumption in
  * the driver code is that lower the queue number higher the
  * priority of the queue.
  */
 u8 sw_pcp_rx_priority_queue_map[PCP_GROUP_TO_QUEUE_MAP_SIZE] = {
-	/* port 1 or PRU 0 */
-	PRUETH_QUEUE2, PRUETH_QUEUE1, 0xff, 0xff,
 	/* port 2 or PRU 1 */
-	PRUETH_QUEUE4, PRUETH_QUEUE3, 0xff, 0xff,
+	PRUETH_QUEUE4, PRUETH_QUEUE4,
+	PRUETH_QUEUE3, PRUETH_QUEUE3,
+	/* port 1 or PRU 0 */
+	PRUETH_QUEUE2, PRUETH_QUEUE2,
+	PRUETH_QUEUE1, PRUETH_QUEUE1,
 };
 
 static int prueth_hsr_prp_pcp_rxq_map_config(struct prueth *prueth)
@@ -2159,7 +2278,7 @@ static irqreturn_t emac_rx_thread(int irq, void *dev_id)
 	prueth = emac->prueth;
 
 	prio_q_ids = emac_port_rx_priority_queue_ids[emac->port_id];
-	q_cnt = emac_num_rx_queues;
+	q_cnt = NUM_RX_QUEUES;
 
 	/* search host queues for packets */
 	for (j = 0; j < q_cnt; j++) {
@@ -2224,6 +2343,7 @@ static irqreturn_t emac_rx_thread(int irq, void *dev_id)
 						     pkt_info, rxqueue);
 				if (ret)
 					return IRQ_HANDLED;
+				emac->rx_packet_counts[i & 1]++;
 			}
 
 			/* after reading the buffer descriptor we clear it
@@ -3126,6 +3246,10 @@ static int emac_ndo_open(struct net_device *ndev)
 		}
 	}
 
+	ret = prueth_debugfs_init(emac);
+	if (ret)
+		goto clean_debugfs_hsr_prp;
+
 	/* reset and start PRU firmware */
 	if (PRUETH_HAS_SWITCH(prueth))
 		prueth_sw_emac_config(prueth, emac);
@@ -3166,6 +3290,8 @@ static int emac_ndo_open(struct net_device *ndev)
 	return 0;
 
 clean_debugfs:
+	prueth_debugfs_term(emac);
+clean_debugfs_hsr_prp:
 	if (PRUETH_HAS_RED(prueth))
 		prueth_hsr_prp_debugfs_term(prueth);
 free_irq:
@@ -3252,6 +3378,8 @@ static int emac_ndo_stop(struct net_device *ndev)
 	/* disable the mac port */
 	prueth_port_enable(emac->prueth, emac->port_id, 0);
 
+	prueth_debugfs_term(emac);
+
 	mutex_lock(&prueth->mlock);
 	/* stop PRU firmware */
 	if (PRUETH_HAS_SWITCH(emac->prueth))
@@ -3328,6 +3456,7 @@ static int emac_ndo_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		}
 	}
 
+	emac->tx_packet_counts[qid]++;
 	ndev->stats.tx_packets++;
 	ndev->stats.tx_bytes += skb->len;
 	dev_kfree_skb_any(skb);
