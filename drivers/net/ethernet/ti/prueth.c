@@ -18,6 +18,7 @@
 #include <linux/etherdevice.h>
 #include <linux/genalloc.h>
 #include <linux/if_vlan.h>
+#include <linux/hrtimer.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -119,7 +120,8 @@ enum pruss_ethtype {
 #define PRUETH_HAS_SWITCH(p) \
 	(PRUETH_IS_SWITCH(p) || PRUETH_HAS_HSR(p) || PRUETH_HAS_PRP(p))
 
-#define PRUETH_RED_TABLE_CHECK_PERIOD	(HZ / 100)
+#define MS_TO_NS(msec)		((msec) * 1000 * 1000)
+#define PRUETH_RED_TABLE_CHECK_PERIOD_MS	10
 /* A group of PCPs are mapped to a Queue. This is the size of firmware
  * array in shared memory
  */
@@ -325,7 +327,7 @@ struct prueth {
 	unsigned int tbl_check_period;
 	unsigned int node_table_clear;
 	unsigned int tbl_check_mask;
-	struct timer_list tbl_check_timer;
+	struct hrtimer tbl_check_timer;
 	struct prueth_mmap_port_cfg_basis mmap_port_cfg_basis[PRUETH_PORT_MAX];
 	struct prueth_mmap_sram_cfg mmap_sram_cfg;
 	struct prueth_mmap_ocmc_cfg mmap_ocmc_cfg;
@@ -1749,10 +1751,16 @@ static int prueth_hsr_prp_protocol_init(struct prueth *prueth)
 }
 
 /* Assumes HAS_RED */
-static void prueth_red_table_timer(unsigned long arg)
+static enum hrtimer_restart prueth_red_table_timer(struct hrtimer *timer)
 {
-	struct prueth *prueth = (struct prueth *)arg;
+	struct prueth *prueth = container_of(timer, struct prueth,
+					     tbl_check_timer);
 	void __iomem *dram1 = prueth->mem[PRUETH_MEM_DRAM1].va;
+
+	hrtimer_forward_now(timer, ktime_set(0, prueth->tbl_check_period));
+	if (prueth->emac_configured !=
+		(BIT(PRUETH_PORT_MII0) | BIT(PRUETH_PORT_MII1)))
+		return HRTIMER_RESTART;
 
 	if (prueth->node_table_clear) {
 		prueth->tbl_check_mask |= HOST_TIMER_NODE_TABLE_CLEAR_BIT;
@@ -1762,10 +1770,7 @@ static void prueth_red_table_timer(unsigned long arg)
 	}
 
 	writel(prueth->tbl_check_mask, dram1 + HOST_TIMER_CHECK_FLAGS);
-
-	prueth->tbl_check_timer.expires = jiffies + prueth->tbl_check_period;
-	if (prueth->emac_configured && prueth->tbl_check_period)
-		add_timer(&prueth->tbl_check_timer);
+	return HRTIMER_RESTART;
 }
 
 static int prueth_init_red_table_timer(struct prueth *prueth)
@@ -1773,8 +1778,9 @@ static int prueth_init_red_table_timer(struct prueth *prueth)
 	if (prueth->emac_configured)
 		return 0;
 
-	prueth->tbl_check_period = PRUETH_RED_TABLE_CHECK_PERIOD;
-	prueth->tbl_check_timer.data = (unsigned long)prueth;
+	hrtimer_init(&prueth->tbl_check_timer, CLOCK_MONOTONIC,
+		     HRTIMER_MODE_REL);
+	prueth->tbl_check_period = MS_TO_NS(PRUETH_RED_TABLE_CHECK_PERIOD_MS);
 	prueth->tbl_check_timer.function = prueth_red_table_timer;
 	prueth->tbl_check_mask = (HOST_TIMER_NODE_TABLE_CHECK_BIT |
 				  HOST_TIMER_HOST_TABLE_CHECK_BIT);
@@ -1793,8 +1799,9 @@ static int prueth_start_red_table_timer(struct prueth *prueth)
 		return 0;
 
 	writel(prueth->tbl_check_mask, dram1 + HOST_TIMER_CHECK_FLAGS);
-	prueth->tbl_check_timer.expires = jiffies + prueth->tbl_check_period;
-	add_timer(&prueth->tbl_check_timer);
+	hrtimer_start(&prueth->tbl_check_timer,
+		      ktime_set(0, prueth->tbl_check_period),
+		      HRTIMER_MODE_REL);
 	return 0;
 }
 
@@ -3323,7 +3330,7 @@ static int sw_emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 	emac_lre_get_stats(emac, &emac->prueth->lre_stats);
 
 	if (PRUETH_HAS_RED(emac->prueth)) {
-		del_timer_sync(&prueth->tbl_check_timer);
+		hrtimer_cancel(&prueth->tbl_check_timer);
 		prueth->tbl_check_period = 0;
 	}
 
@@ -4217,9 +4224,6 @@ static int prueth_probe(struct platform_device *pdev)
 		prueth->registered_netdevs[i] = prueth->emac[port]->ndev;
 	}
 
-	if (PRUETH_HAS_RED(prueth))
-		init_timer(&prueth->tbl_check_timer);
-
 	dev_info(dev, "TI PRU ethernet (type %u) driver initialized\n",
 		 prueth->eth_type);
 
@@ -4269,7 +4273,6 @@ static int prueth_remove(struct platform_device *pdev)
 	int i;
 
 	prueth_hsr_prp_debugfs_term(prueth);
-	del_timer_sync(&prueth->tbl_check_timer);
 	prueth->tbl_check_period = 0;
 
 	for (i = 0; i < PRUETH_PORT_MAX; i++) {
