@@ -374,8 +374,12 @@ static void hsr_prp_announce(unsigned long data)
 			send_supervision_frame(master, HSR_TLV_LIFE_CHECK,
 					       priv->prot_ver);
 		else /* PRP */
-			send_supervision_frame(master, PRP_TLV_LIFE_CHECK_DD,
-					       priv->prot_ver);
+			send_supervision_frame(master,
+					       (priv->dup_discard_mode ==
+						IEC62439_3_PRP_DD) ?
+						PRP_TLV_LIFE_CHECK_DD :
+						PRP_TLV_LIFE_CHECK_DA,
+						priv->prot_ver);
 
 		priv->announce_timer.expires = jiffies +
 			msecs_to_jiffies(HSR_PRP_LIFE_CHECK_INTERVAL);
@@ -504,9 +508,11 @@ int hsr_prp_dev_finalize(struct net_device *hsr_prp_dev,
 	priv->prot_ver = protocol_version;
 	if (priv->prot_ver == PRP_V1) {
 		/* For PRP, lan_id has most significant 3 bits holding
-		 * the net_id of PRP_LAN_ID
+		 * the net_id of PRP_LAN_ID and also duplicate discard
+		 * mode set.
 		 */
 		priv->net_id = PRP_LAN_ID << 1;
+		priv->dup_discard_mode = IEC62439_3_PRP_DD;
 	} else {
 		priv->hsr_mode = IEC62439_3_HSR_MODE_H;
 	}
