@@ -27,6 +27,8 @@
 
 #define IEP_SYNC_EN                  BIT(0)
 #define IEP_SYNC0_EN                 BIT(1)
+#define IEP_SYNC1_EN                 BIT(2)
+#define IEP_SYNC1_IND_EN             BIT(8)
 #define IEP_CMP1_EN                  BIT(2)
 #define IEP_CMP1_HIT                 BIT(1)
 
@@ -36,14 +38,32 @@
 #define PRUSS_IEP_SLOW_COMPENSATION  0x0C
 #define PRUSS_IEP_COUNT_REG0         0x10
 #define PRUSS_IEP_COUNT_REG1         0x14
+#define PRUSS_IEP_CAPTURE_CFG_REG    0x18
+#define PRUSS_IEP_CAPTURE_STAT_REG   0x1c
+
+#define PRUSS_IEP_CAP6_RISE_REG0     0x50
+#define PRUSS_IEP_CAP6_RISE_REG1     0x54
+#define PRUSS_IEP_CAP6_FALL_REG0     0x58
+#define PRUSS_IEP_CAP6_FALL_REG1     0x5c
+
+#define PRUSS_IEP_CAP7_RISE_REG0     0x60
+#define PRUSS_IEP_CAP7_RISE_REG1     0x64
+#define PRUSS_IEP_CAP7_FALL_REG0     0x68
+#define PRUSS_IEP_CAP7_FALL_REG1     0x6c
+
 #define PRUSS_IEP_CMP_CFG_REG        0x70
 #define PRUSS_IEP_CMP_STAT_REG       0x74
-#define PRUSS_IEP_CMP1_REG0          0x80
-#define PRUSS_IEP_CMP1_REG1          0x84
+#define PRUSS_IEP_CMP0_REG0          0x78
+#define PRUSS_IEP_CMP0_REG1          0x7c
+
+#define PRUSS_IEP_CMP8_REG0          0xc0
+#define PRUSS_IEP_CMP8_REG1          0xc4
 #define PRUSS_IEP_SYNC_CTRL_REG      0x180
 #define PRUSS_IEP_SYNC0_STAT_REG     0x188
+#define PRUSS_IEP_SYNC1_STAT_REG     0x18c
 #define PRUSS_IEP_SYNC_PWIDTH_REG    0x190
 #define PRUSS_IEP_SYNC0_PERIOD_REG   0x194
+#define PRUSS_IEP_SYNC1_DELAY_REG    0x198
 #define PRUSS_IEP_SYNC_START_REG     0x19c
 
 #define PRUSS_IEP_CMP_INC_MASK       0xfff00
@@ -62,19 +82,37 @@
 /* 10 ms width */
 #define IEP_DEFAULT_PPS_WIDTH        (PRUSS_IEP_CLOCK_RATE / 100)
 
-#define CTRL_CORE_PAD_VOUT1_D7       0x4a0035f8
-
 /* 1ms pulse sync interval */
 #define PULSE_SYNC_INTERVAL          1000000
 #define TIMESYNC_SECONDS_COUNT_SIZE  6
 #define PTP_TWO_STEP_ENABLE          1
 #define TIMESYNC_ENABLE              1
 
+#define IEP_PPS_EXTERNAL             1
+#define IEP_PPS_INTERNAL             0
+#define MAX_PPS                      2
+#define MAX_EXTTS                    2
+
+struct pps {
+	struct pinctrl_state *pin_on;
+	struct pinctrl_state *pin_off;
+	int enable;
+	int next_op;
+	enum {
+		OP_DISABLE_SYNC,
+		OP_ENABLE_SYNC,
+	} report_ops[4];
+};
+
+struct extts {
+	struct pinctrl_state *pin_on;
+	struct pinctrl_state *pin_off;
+};
+
 struct iep {
 	struct device *dev;
 	void __iomem *sram;
 	void __iomem *iep_reg;
-	u32 __iomem  *pr2_sync0_mux;
 	struct ptp_clock_info info;
 	struct ptp_clock *ptp_clock;
 	int phc_index;
@@ -86,13 +124,13 @@ struct iep {
 	struct timecounter tc;
 	unsigned long ov_check_period;
 	unsigned long ov_check_period_slow;
-	u64 cmp1_last;
-	int pps_enable;
-	int pps_report_next_op;
-	enum {
-		DISABLE_SYNC0,
-		ENABLE_SYNC0,
-	} pps_ops[4];
+	struct pps pps[MAX_PPS];
+	u32 latch_enable;
+
+	int bc_clkid;
+	bool bc_pps_sync;
+	struct pinctrl *pins;
+	struct extts extts[MAX_EXTTS];
 };
 
 void iep_reset_timestamp(struct iep *iep, u16 ts_ofs);
