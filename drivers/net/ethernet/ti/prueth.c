@@ -4735,7 +4735,8 @@ static int prueth_probe(struct platform_device *pdev)
 
 	prueth->iep = iep_create(prueth->dev,
 				 prueth->mem[PRUETH_MEM_SHARED_RAM].va,
-				 prueth->mem[PRUETH_MEM_IEP].va);
+				 prueth->mem[PRUETH_MEM_IEP].va,
+				 prueth->pruss_id);
 	if (IS_ERR(prueth->iep)) {
 		ret = PTR_ERR(prueth->iep);
 		goto netdev_exit;
@@ -4812,6 +4813,7 @@ static int prueth_remove(struct platform_device *pdev)
 	struct prueth *prueth = platform_get_drvdata(pdev);
 	int i;
 
+	iep_release(prueth->iep);
 	prueth_hsr_prp_debugfs_term(prueth);
 	prueth->tbl_check_period = 0;
 
