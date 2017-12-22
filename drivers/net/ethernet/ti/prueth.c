@@ -21,6 +21,7 @@
 #include <linux/hrtimer.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
+#include <linux/kthread.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
@@ -40,320 +41,19 @@
 #include "icss_switch.h"
 #include "hsr_prp_firmware.h"
 #include "iep.h"
+#include "pruss_node_tbl.h"
 
 #define PRUETH_MODULE_VERSION "0.2"
 #define PRUETH_MODULE_DESCRIPTION "PRUSS Ethernet driver"
-
-#define OCMC_RAM_SIZE		(SZ_64K - SZ_8K)
-
-/* Pn_COL_BUFFER_OFFSET @ 0xEE00 0xF400 0xFA00 */
-#define OCMC_RAM_SIZE_SWITCH	(SZ_64K)
-
-/* TX Minimum Inter packet gap */
-#define TX_MIN_IPG		0xb8
-
-#define TX_START_DELAY		0x40
-#define TX_CLK_DELAY		0x6
-
-/* PRUSS local memory map */
-#define ICSS_LOCAL_SHARED_RAM   0x00010000
-
-/* Netif debug messages possible */
-#define PRUETH_EMAC_DEBUG	(NETIF_MSG_DRV | \
-				 NETIF_MSG_PROBE | \
-				 NETIF_MSG_LINK | \
-				 NETIF_MSG_TIMER | \
-				 NETIF_MSG_IFDOWN | \
-				 NETIF_MSG_IFUP | \
-				 NETIF_MSG_RX_ERR | \
-				 NETIF_MSG_TX_ERR | \
-				 NETIF_MSG_TX_QUEUED | \
-				 NETIF_MSG_INTR | \
-				 NETIF_MSG_TX_DONE | \
-				 NETIF_MSG_RX_STATUS | \
-				 NETIF_MSG_PKTDATA | \
-				 NETIF_MSG_HW | \
-				 NETIF_MSG_WOL)
 
 static int debug_level = -1;
 module_param(debug_level, int, 0);
 MODULE_PARM_DESC(debug_level, "PRUETH debug level (NETIF_MSG bits)");
 
-#define EMAC_MAX_PKTLEN		(ETH_HLEN + VLAN_HLEN + ETH_DATA_LEN)
-#define EMAC_MIN_PKTLEN		(60)
-
-enum pruss_device {
-	PRUSS_AM57XX = 0,
-	PRUSS_AM4376,
-	PRUSS_AM3359,
-	PRUSS_K2G
-};
-
-#define PRUSS0 0
-#define PRUSS1 1
-#define PRUSS2 2
-
-/* PRU Ethernet Type - Ethernet functionality (protocol
- * implemented) provided by the PRU firmware being loaded.
- */
-enum pruss_ethtype {
-	PRUSS_ETHTYPE_EMAC = 0,
-	PRUSS_ETHTYPE_HSR,
-	PRUSS_ETHTYPE_PRP,
-	PRUSS_ETHTYPE_SWITCH,
-	PRUSS_ETHTYPE_MAX,
-};
-
-#define HSR_TAG_LEN		(10)
-#define EMAC_MAX_PKTLEN_HSR	(EMAC_MAX_PKTLEN + HSR_TAG_LEN)
-#define PRUETH_IS_EMAC(p)	((p)->eth_type == PRUSS_ETHTYPE_EMAC)
-#define PRUETH_IS_HSR(p)	((p)->eth_type == PRUSS_ETHTYPE_HSR)
-#define PRUETH_IS_PRP(p)	((p)->eth_type == PRUSS_ETHTYPE_PRP)
-#define PRUETH_IS_SWITCH(p)	((p)->eth_type == PRUSS_ETHTYPE_SWITCH)
-
-#define PRUETH_HAS_HSR(p)	PRUETH_IS_HSR(p)
-#define PRUETH_HAS_PRP(p)	PRUETH_IS_PRP(p)
-#define PRUETH_HAS_RED(p)	(PRUETH_HAS_HSR(p) || PRUETH_HAS_PRP(p))
-
-#define PRUETH_HAS_SWITCH(p) \
-	(PRUETH_IS_SWITCH(p) || PRUETH_HAS_HSR(p) || PRUETH_HAS_PRP(p))
-
-#define MS_TO_NS(msec)		((msec) * 1000 * 1000)
-#define PRUETH_RED_TABLE_CHECK_PERIOD_MS	10
-#define PRUETH_HAS_PTP(p)       PRUETH_HAS_PRP(p)
-/* A group of PCPs are mapped to a Queue. This is the size of firmware
- * array in shared memory
- */
-#define PCP_GROUP_TO_QUEUE_MAP_SIZE	8
-
-/* In switch mode there are 3 real ports i.e. 3 mac addrs.
- * however Linux sees only the host side port. The other 2 ports
- * are the switch ports.
- * In emac mode there are 2 real ports i.e. 2 mac addrs.
- * Linux sees both the ports.
- */
-enum prueth_port {
-	PRUETH_PORT_HOST = 0,	/* host side port */
-	PRUETH_PORT_MII0,	/* physical port MII 0 */
-	PRUETH_PORT_MII1,	/* physical port MII 1 */
-	PRUETH_PORT_MAX,
-};
-
-/* In both switch & emac modes there are 3 port queues
- * EMAC mode:
- *	RX packets for both MII0 & MII1 ports come on
- *	QUEUE_HOST.
- *	TX packets for MII0 go on QUEUE_MII0, TX packets
- *	for MII1 go on QUEUE_MII1.
- * Switch mode:
- *	Host port RX packets come on QUEUE_HOST
- *	TX packets might have to go on MII0 or MII1 or both.
- *	MII0 TX queue is QUEUE_MII0 and MII1 TX queue is
- *	QUEUE_MII1.
- */
-enum prueth_port_queue_id {
-	PRUETH_PORT_QUEUE_HOST = 0,
-	PRUETH_PORT_QUEUE_MII0,
-	PRUETH_PORT_QUEUE_MII1,
-	PRUETH_PORT_QUEUE_MII0_RX,
-	PRUETH_PORT_QUEUE_MII1_RX,
-	PRUETH_PORT_QUEUE_MAX,
-};
-
-#define NUM_RX_QUEUES	(NUM_QUEUES / 2)
-/* Each port queue has 4 queues and 1 collision queue */
-enum prueth_queue_id {
-	PRUETH_QUEUE1 = 0,
-	PRUETH_QUEUE2,
-	PRUETH_QUEUE3,
-	PRUETH_QUEUE4,
-	PRUETH_COLQ,	/* collision queue */
-};
-
-/* PRUeth memory range identifiers */
-enum prueth_mem {
-	PRUETH_MEM_DRAM0 = 0,
-	PRUETH_MEM_DRAM1,
-	PRUETH_MEM_SHARED_RAM,
-	PRUETH_MEM_IEP,
-	PRUETH_MEM_MII,
-	PRUETH_MEM_OCMC,
-	PRUETH_MEM_MAX,
-};
-
 /* ensure that order of PRUSS mem regions is same as above */
 static enum pruss_mem pruss_mem_ids[] = { PRUSS_MEM_DRAM0, PRUSS_MEM_DRAM1,
 					  PRUSS_MEM_SHRD_RAM2, PRUSS_MEM_IEP,
 					  PRUSS_MEM_MII_RT };
-
-/**
- * @fw_name: firmware names of firmware to run on PRU
- */
-struct prueth_firmwares {
-	const char *fw_name[PRUSS_ETHTYPE_MAX];
-};
-
-/**
- * struct prueth_private_data - PRU Ethernet private data
- * @driver_data: soc that contains the pruss
- * @fw_pru: firmware to run on each pruss
- */
-struct prueth_private_data {
-	enum pruss_device driver_data;
-	struct prueth_firmwares fw_pru[PRUSS_NUM_PRUS];
-};
-
-/* data for each emac port */
-struct prueth_emac {
-	struct prueth *prueth;
-	struct net_device *ndev;
-	struct sk_buff *tx_ev_msg[PTP_PDLY_RSP_MSG_ID + 1]; /* tx ev needs ts */
-	u8 mac_addr[6];
-	u32 msg_enable;
-
-	int link;
-	int speed;
-	int duplex;
-
-	const char *phy_id;
-	struct device_node *phy_node;
-	int phy_if;
-	struct phy_device *phydev;
-
-	enum prueth_port port_id;
-	/* emac mode irqs */
-	int rx_irq;
-	int tx_irq;
-
-	struct prueth_queue_desc __iomem *rx_queue_descs;
-	struct prueth_queue_desc __iomem *tx_queue_descs;
-	struct prueth_queue_desc __iomem *tx_colq_descs;
-
-	unsigned int prp_emac_mode;
-	struct port_statistics stats; /* stats holder when i/f is down */
-	u32 tx_collisions;
-	u32 tx_collision_drops;
-	u32 rx_overflows;
-	u32 tx_packet_counts[NUM_QUEUES];
-	u32 rx_packet_counts[NUM_RX_QUEUES];
-
-	spinlock_t lock;	/* serialize access */
-#ifdef	CONFIG_DEBUG_FS
-	struct dentry *root_dir;
-	struct dentry *stats_file;
-	struct dentry *prp_emac_mode_file;
-#endif
-	int ptp_tx_enable;
-	int ptp_rx_enable;
-	int ptp_tx_irq;
-};
-
-struct prueth_mmap_port_cfg_basis {
-	u16 queue_size[NUM_QUEUES];
-	u16 queue1_bd_offset;
-	u16 queue1_buff_offset;
-	u16 queue1_desc_offset;
-	u16 col_queue_size;
-	u16 col_bd_offset;
-	u16 col_buff_offset;
-	u16 col_queue_desc_offset;
-};
-
-struct prueth_mmap_sram_emac {
-	u16 icss_emac_firmware_release_1_offset;  /* = eof_48k_buffer_bd */
-	u16 icss_emac_firmware_release_2_offset;  /* +4 */
-
-	u16 host_q1_rx_context_offset;            /* +4 */
-	u16 host_q2_rx_context_offset;            /* +8 */
-	u16 host_q3_rx_context_offset;            /* +8 */
-	u16 host_q4_rx_context_offset;            /* +8 */
-
-	u16 host_queue_descriptor_offset_addr;    /* +8 */
-	u16 host_queue_offset_addr;               /* +8 */
-	u16 host_queue_size_addr;                 /* +8 */
-	u16 host_queue_desc_offset;               /* +16 */
-};
-
-struct prueth_mmap_sram_sw {
-	u16 col_bd_offset[PRUETH_PORT_MAX];
-};
-
-struct prueth_mmap_sram_cfg {
-	/* P0_Q1_BD_OFFSET = SRAM_START_OFFSET */
-	u16 bd_offset[PRUETH_PORT_MAX][NUM_QUEUES];
-
-	u16 end_of_bd_pool;
-	u16 port_bd_size;
-	u16 host_bd_size;
-	u16 eof_48k_buffer_bd;
-
-	union {
-		struct prueth_mmap_sram_sw   mmap_sram_sw;
-		struct prueth_mmap_sram_emac mmap_sram_emac;
-	};
-};
-
-struct prueth_mmap_ocmc_cfg {
-	u16 buffer_offset[PRUETH_PORT_MAX][NUM_QUEUES];
-};
-
-/**
- * struct prueth - PRUeth structure
- * @dev: device
- * @pruss: pruss handle
- * @pru0: rproc instance to PRU0
- * @pru1: rproc instance to PRU1
- * @mem: PRUSS memory resources we need to access
- * @sram_pool: OCMC ram pool for buffers
- *
- * @eth_node: node for each emac node
- * @emac: emac data for three ports, one host and two physical
- * @registered_netdevs: net device for each registered emac
- * @fw_data: firmware names to be used with PRU remoteprocs
- * @pruss_id: PRUSS instance id
- */
-struct prueth {
-	struct device *dev;
-	struct pruss *pruss;
-	struct rproc *pru0, *pru1;
-	struct pruss_mem_region mem[PRUETH_MEM_MAX];
-	struct gen_pool *sram_pool;
-
-	struct device_node *eth_node[PRUETH_PORT_MAX];
-	struct device_node *prueth_np;
-	struct prueth_emac *emac[PRUETH_PORT_MAX];
-	struct net_device *registered_netdevs[PRUETH_PORT_MAX];
-	const struct prueth_private_data *fw_data;
-	int pruss_id;
-	size_t ocmc_ram_size;
-	unsigned int eth_type;
-	unsigned int hsr_mode;
-	unsigned int emac_configured;
-	unsigned int tbl_check_period;
-	unsigned int node_table_clear;
-	unsigned int tbl_check_mask;
-	struct hrtimer tbl_check_timer;
-	struct prueth_mmap_port_cfg_basis mmap_port_cfg_basis[PRUETH_PORT_MAX];
-	struct prueth_mmap_sram_cfg mmap_sram_cfg;
-	struct prueth_mmap_ocmc_cfg mmap_ocmc_cfg;
-	struct lre_statistics lre_stats;
-	struct iep *iep;
-	/* To provide a synchronization point to wait before proceed to port
-	 * specific initialization or configuration. This is needed when
-	 * concurrent device open happens.
-	 */
-	struct mutex mlock;
-#ifdef	CONFIG_DEBUG_FS
-	struct dentry *root_dir;
-	struct dentry *node_tbl_file;
-	struct dentry *nt_clear_file;
-	struct dentry *hsr_mode_file;
-	struct dentry *dlrmt_file;
-	struct dentry *dd_file;
-	struct dentry *tr_file;
-	struct dentry *error_stats_file;
-#endif
-};
 
 static int pruss0_ethtype = PRUSS_ETHTYPE_EMAC;
 module_param(pruss0_ethtype, int, 0444);
@@ -1354,6 +1054,24 @@ int prueth_hsr_prp_debugfs_init(struct prueth *prueth)
 	}
 	prueth->error_stats_file = de;
 
+	de = debugfs_create_file("new_nt_index", S_IFREG | 0444,
+				 prueth->root_dir, prueth->nt,
+				 &prueth_new_nt_index_fops);
+	if (!de) {
+		dev_err(dev, "Cannot create new_nt_index file\n");
+		return rc;
+	}
+	prueth->new_nt_index = de;
+
+	de = debugfs_create_file("new_nt_bins", S_IFREG | 0444,
+				 prueth->root_dir, prueth->nt,
+				 &prueth_new_nt_bins_fops);
+	if (!de) {
+		dev_err(dev, "Cannot create new_nt_indexes file\n");
+		return rc;
+	}
+	prueth->new_nt_bins = de;
+
 	return 0;
 }
 
@@ -1397,6 +1115,11 @@ prueth_hsr_prp_debugfs_term(struct prueth *prueth)
 	prueth->tr_file = NULL;
 	prueth->error_stats_file = NULL;
 	prueth->root_dir = NULL;
+
+	debugfs_remove(prueth->new_nt_index);
+	prueth->new_nt_index = NULL;
+	debugfs_remove(prueth->new_nt_bins);
+	prueth->new_nt_bins = NULL;
 }
 #else
 static inline int prueth_hsr_prp_debugfs_init(struct prueth *prueth)
@@ -1948,6 +1671,20 @@ static int prueth_hsr_prp_host_table_init(struct prueth *prueth)
 	return 0;
 }
 
+static void nt_updater(struct kthread_work *work)
+{
+	struct prueth *prueth = container_of(work, struct prueth, nt_work);
+
+	pop_queue_process(prueth, &prueth->nt_lock);
+
+	node_table_update_time(prueth->nt);
+	if (++prueth->rem_cnt >= 100) {
+		node_table_check_and_remove(prueth->nt,
+					    NODE_FORGET_TIME_60000_MS);
+		prueth->rem_cnt = 0;
+	}
+}
+
 static int prueth_hsr_prp_node_table_init(struct prueth *prueth)
 {
 	void __iomem *dram0 = prueth->mem[PRUETH_MEM_DRAM0].va;
@@ -1976,6 +1713,13 @@ static int prueth_hsr_prp_node_table_init(struct prueth *prueth)
 	writel(MASTER_SLAVE_BUSY_BITS_CLEAR, dram1 + NODE_TABLE_ARBITRATION);
 	writel(NODE_FORGET_TIME_60000_MS,    dram1 + NODE_FORGET_TIME);
 	writel(TABLE_CHECK_RESOLUTION_10_MS, dram1 + NODETABLE_CHECK_RESO);
+
+	prueth->nt = prueth->mem[PRUETH_MEM_SHARED_RAM].va + NODE_TABLE_NEW;
+	node_table_init(prueth);
+	spin_lock_init(&prueth->nt_lock);
+	kthread_init_work(&prueth->nt_work, nt_updater);
+	prueth->nt_kworker = kthread_create_worker(0, "prueth_nt");
+
 	return 0;
 }
 
@@ -2042,6 +1786,7 @@ static enum hrtimer_restart prueth_red_table_timer(struct hrtimer *timer)
 	struct prueth *prueth = container_of(timer, struct prueth,
 					     tbl_check_timer);
 	void __iomem *dram1 = prueth->mem[PRUETH_MEM_DRAM1].va;
+	unsigned long flags;
 
 	hrtimer_forward_now(timer, ktime_set(0, prueth->tbl_check_period));
 	if (prueth->emac_configured !=
@@ -2049,11 +1794,18 @@ static enum hrtimer_restart prueth_red_table_timer(struct hrtimer *timer)
 		return HRTIMER_RESTART;
 
 	if (prueth->node_table_clear) {
-		prueth->tbl_check_mask |= HOST_TIMER_NODE_TABLE_CLEAR_BIT;
+		spin_lock_irqsave(&prueth->nt_lock, flags);
+		node_table_init(prueth);
+		spin_unlock_irqrestore(&prueth->nt_lock, flags);
+
 		prueth->node_table_clear = 0;
 	} else {
 		prueth->tbl_check_mask &= ~HOST_TIMER_NODE_TABLE_CLEAR_BIT;
 	}
+
+
+	/* schedule work here */
+	kthread_queue_work(prueth->nt_kworker, &prueth->nt_work);
 
 	writel(prueth->tbl_check_mask, dram1 + HOST_TIMER_CHECK_FLAGS);
 	return HRTIMER_RESTART;
@@ -2085,6 +1837,7 @@ static int prueth_start_red_table_timer(struct prueth *prueth)
 		return 0;
 
 	writel(prueth->tbl_check_mask, dram1 + HOST_TIMER_CHECK_FLAGS);
+
 	hrtimer_start(&prueth->tbl_check_timer,
 		      ktime_set(0, prueth->tbl_check_period),
 		      HRTIMER_MODE_REL);
@@ -2476,6 +2229,10 @@ static void parse_packet_info(struct prueth *prueth, u32 buffer_descriptor,
 			   PRUETH_BD_LENGTH_SHIFT;
 	pkt_info->broadcast = !!(buffer_descriptor & PRUETH_BD_BROADCAST_MASK);
 	pkt_info->error = !!(buffer_descriptor & PRUETH_BD_ERROR_MASK);
+	pkt_info->sv_frame = !!(buffer_descriptor &
+				PRUETH_BD_SUP_HSR_FRAME_MASK);
+	pkt_info->lookup_success = !!(buffer_descriptor &
+				      PRUETH_BD_LOOKUP_SUCCESS_MASK);
 }
 
 /* get packet from queue
@@ -2487,12 +2244,15 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 {
 	struct prueth_mmap_port_cfg_basis *pb;
 	struct net_device *ndev = emac->ndev;
+	struct prueth *prueth = emac->prueth;
 	int read_block, update_block, pkt_block_size;
 	unsigned int buffer_desc_count;
 	bool buffer_wrapped = false;
 	struct sk_buff *skb;
 	void *src_addr;
 	void *dst_addr;
+	void *nt_dst_addr;
+	u8 macid[6];
 	/* OCMC RAM is not cached and read order is not important */
 	void *ocmc_ram = (__force void *)emac->prueth->mem[PRUETH_MEM_OCMC].va;
 	unsigned int actual_pkt_len;
@@ -2529,6 +2289,7 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 		return -ENOMEM;
 	}
 	dst_addr = skb->data;
+	nt_dst_addr = dst_addr;
 
 	/* Get the start address of the first buffer from
 	 * the read buffer description
@@ -2564,7 +2325,6 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 
 		/* copy non-wrapped part */
 		memcpy(dst_addr, src_addr, bytes);
-
 		/* copy wrapped part */
 		dst_addr += bytes;
 		remaining = actual_pkt_len - bytes;
@@ -2577,6 +2337,27 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 		memcpy(dst_addr, src_addr, actual_pkt_len);
 	}
 
+	if (PRUETH_HAS_RED(prueth) && !pkt_info.lookup_success) {
+		if (PRUETH_HAS_PRP(prueth)) {
+			memcpy(macid,
+			       ((pkt_info.sv_frame) ? nt_dst_addr + 20 :
+				src_addr),
+			       6);
+
+			node_table_insert(prueth, macid, emac->port_id,
+					  pkt_info.sv_frame, RED_PROTO_PRP,
+					  &prueth->nt_lock);
+
+		} else if (pkt_info.sv_frame) {
+			memcpy(macid, nt_dst_addr + 20, 6);
+			node_table_insert(prueth, macid, emac->port_id,
+					  pkt_info.sv_frame, RED_PROTO_HSR,
+					  &prueth->nt_lock);
+		}
+	}
+
+	if (!pkt_info.sv_frame) {
+
 	skb_put(skb, pkt_info.length);
 
 	if (PRUETH_HAS_PTP(emac->prueth))
@@ -2585,6 +2366,9 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 	/* send packet up the stack */
 	skb->protocol = eth_type_trans(skb, ndev);
 	netif_rx(skb);
+
+	} else
+		dev_kfree_skb_any(skb);
 
 	/* update stats */
 	ndev->stats.rx_bytes += pkt_info.length;
@@ -3558,6 +3342,8 @@ static int emac_ndo_open(struct net_device *ndev)
 	 * sizes are fundamental to the remaining configuration
 	 * calculations.
 	 */
+	prueth->nt = prueth->mem[PRUETH_MEM_SHARED_RAM].va + NODE_TABLE_NEW;
+
 	if (!prueth->emac_configured) {
 		if (PRUETH_HAS_HSR(prueth))
 			prueth->hsr_mode = MODEH;
@@ -3587,6 +3373,17 @@ static int emac_ndo_open(struct net_device *ndev)
 			dev_err(&ndev->dev, "hostinit failed: %d\n", ret);
 			goto free_ptp_irq;
 		}
+
+		if (PRUETH_HAS_RED(prueth)) {
+			prueth->mac_queue = kmalloc(sizeof(struct nt_queue_t),
+						    GFP_KERNEL);
+			if (!prueth->mac_queue) {
+				dev_err(&ndev->dev,
+					"cannot allocate mac queue\n");
+				goto free_ptp_irq;
+			}
+		}
+
 		if (PRUETH_HAS_RED(prueth)) {
 			ret = prueth_hsr_prp_debugfs_init(prueth);
 			if (ret)
@@ -3680,6 +3477,11 @@ static int sw_emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 	if (PRUETH_HAS_RED(emac->prueth)) {
 		hrtimer_cancel(&prueth->tbl_check_timer);
 		prueth->tbl_check_period = 0;
+
+		if (prueth->mac_queue) {
+			kfree(prueth->mac_queue);
+			prueth->mac_queue = NULL;
+		}
 	}
 
 	return 0;
