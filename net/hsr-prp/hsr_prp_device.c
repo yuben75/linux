@@ -196,7 +196,24 @@ static int hsr_prp_dev_open(struct net_device *dev)
 
 static int hsr_prp_dev_close(struct net_device *dev)
 {
-	/* Nothing to do here. */
+	struct hsr_prp_priv *priv;
+	struct hsr_prp_port *port;
+
+	priv = netdev_priv(dev);
+	hsr_prp_for_each_port(priv, port) {
+		if (port->type == HSR_PRP_PT_MASTER)
+			continue;
+		switch (port->type) {
+		case HSR_PRP_PT_SLAVE_A:
+		case HSR_PRP_PT_SLAVE_B:
+			dev_uc_unsync(port->dev, dev);
+			dev_mc_unsync(port->dev, dev);
+			break;
+		default:
+			break;
+		}
+	}
+
 	return 0;
 }
 
@@ -414,12 +431,58 @@ static void hsr_prp_dev_destroy(struct net_device *hsr_dev)
 	synchronize_rcu();
 }
 
+static void hsr_prp_ndo_set_rx_mode(struct net_device *dev)
+{
+	struct hsr_prp_priv *priv;
+	struct hsr_prp_port *port;
+
+	priv = netdev_priv(dev);
+	hsr_prp_for_each_port(priv, port) {
+		if (port->type == HSR_PRP_PT_MASTER)
+			continue;
+		switch (port->type) {
+		case HSR_PRP_PT_SLAVE_A:
+		case HSR_PRP_PT_SLAVE_B:
+			dev_mc_sync_multiple(port->dev, dev);
+			dev_uc_sync_multiple(port->dev, dev);
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+static void hsr_prp_change_rx_flags(struct net_device *dev, int change)
+{
+	struct hsr_prp_port *port;
+	struct hsr_prp_priv *priv;
+
+	priv = netdev_priv(dev);
+	hsr_prp_for_each_port(priv, port) {
+		if (port->type == HSR_PRP_PT_MASTER)
+			continue;
+		switch (port->type) {
+		case HSR_PRP_PT_SLAVE_A:
+		case HSR_PRP_PT_SLAVE_B:
+			if (change & IFF_ALLMULTI)
+				dev_set_allmulti(port->dev,
+						 dev->flags &
+						 IFF_ALLMULTI ? 1 : -1);
+			break;
+		default:
+			break;
+		}
+	}
+}
+
 static const struct net_device_ops hsr_prp_device_ops = {
 	.ndo_change_mtu = hsr_prp_dev_change_mtu,
 	.ndo_open = hsr_prp_dev_open,
 	.ndo_stop = hsr_prp_dev_close,
 	.ndo_start_xmit = hsr_prp_dev_xmit,
+	.ndo_change_rx_flags = hsr_prp_change_rx_flags,
 	.ndo_fix_features = hsr_prp_fix_features,
+	.ndo_set_rx_mode = hsr_prp_ndo_set_rx_mode,
 };
 
 static void hsr_prp_dev_setup(struct net_device *dev, struct device_type *type)
