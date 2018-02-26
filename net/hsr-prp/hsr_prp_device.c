@@ -197,21 +197,18 @@ static int hsr_prp_dev_open(struct net_device *dev)
 static int hsr_prp_dev_close(struct net_device *dev)
 {
 	struct hsr_prp_priv *priv;
-	struct hsr_prp_port *port;
+	struct hsr_prp_port *port_a, *port_b;
 
 	priv = netdev_priv(dev);
-	hsr_prp_for_each_port(priv, port) {
-		if (port->type == HSR_PRP_PT_MASTER)
-			continue;
-		switch (port->type) {
-		case HSR_PRP_PT_SLAVE_A:
-		case HSR_PRP_PT_SLAVE_B:
-			dev_uc_unsync(port->dev, dev);
-			dev_mc_unsync(port->dev, dev);
-			break;
-		default:
-			break;
-		}
+
+	port_a = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_A);
+	port_b = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_B);
+
+	if (port_a && port_b) {
+		dev_mc_unsync(port_a->dev, dev);
+		dev_uc_unsync(port_a->dev, dev);
+		dev_mc_unsync(port_b->dev, dev);
+		dev_uc_unsync(port_b->dev, dev);
 	}
 
 	return 0;
@@ -433,46 +430,83 @@ static void hsr_prp_dev_destroy(struct net_device *hsr_dev)
 
 static void hsr_prp_ndo_set_rx_mode(struct net_device *dev)
 {
+	struct hsr_prp_port *port_a, *port_b;
 	struct hsr_prp_priv *priv;
-	struct hsr_prp_port *port;
 
 	priv = netdev_priv(dev);
-	hsr_prp_for_each_port(priv, port) {
-		if (port->type == HSR_PRP_PT_MASTER)
-			continue;
-		switch (port->type) {
-		case HSR_PRP_PT_SLAVE_A:
-		case HSR_PRP_PT_SLAVE_B:
-			dev_mc_sync_multiple(port->dev, dev);
-			dev_uc_sync_multiple(port->dev, dev);
-			break;
-		default:
-			break;
-		}
+	port_a = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_A);
+	port_b = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_B);
+
+	if (port_a && port_b) {
+		dev_mc_sync_multiple(port_a->dev, dev);
+		dev_uc_sync_multiple(port_a->dev, dev);
+		dev_mc_sync_multiple(port_b->dev, dev);
+		dev_uc_sync_multiple(port_b->dev, dev);
 	}
 }
 
 static void hsr_prp_change_rx_flags(struct net_device *dev, int change)
 {
-	struct hsr_prp_port *port;
+	struct hsr_prp_port *port_a, *port_b;
 	struct hsr_prp_priv *priv;
 
 	priv = netdev_priv(dev);
-	hsr_prp_for_each_port(priv, port) {
-		if (port->type == HSR_PRP_PT_MASTER)
-			continue;
-		switch (port->type) {
-		case HSR_PRP_PT_SLAVE_A:
-		case HSR_PRP_PT_SLAVE_B:
-			if (change & IFF_ALLMULTI)
-				dev_set_allmulti(port->dev,
-						 dev->flags &
-						 IFF_ALLMULTI ? 1 : -1);
-			break;
-		default:
-			break;
+
+	port_a = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_A);
+	port_b = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_B);
+
+	if (port_a && port_b) {
+		if (change & IFF_ALLMULTI) {
+			dev_set_allmulti(port_a->dev,
+					 dev->flags &
+					 IFF_ALLMULTI ? 1 : -1);
+			dev_set_allmulti(port_b->dev,
+					 dev->flags &
+					 IFF_ALLMULTI ? 1 : -1);
 		}
 	}
+}
+
+static int hsr_prp_add_del_vid(struct hsr_prp_priv *priv, bool add,
+			       __be16 proto, u16 vid)
+{
+	struct hsr_prp_port *port_a, *port_b;
+	int ret = 0;
+
+	port_a = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_A);
+	port_b = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_B);
+
+	if (!port_a || !port_b)
+		return -ENODEV;
+
+	if (add) {
+		ret = vlan_vid_add(port_a->dev, proto, vid);
+		if (!ret)
+			ret = vlan_vid_add(port_b->dev, proto, vid);
+	} else {
+		vlan_vid_del(port_a->dev, proto, vid);
+		vlan_vid_del(port_b->dev, proto, vid);
+	}
+
+	return ret;
+}
+
+static int hsr_prp_ndo_vlan_rx_add_vid(struct net_device *dev,
+				       __be16 proto, u16 vid)
+{
+	struct hsr_prp_priv *priv;
+
+	priv = netdev_priv(dev);
+	return hsr_prp_add_del_vid(priv, true, proto, vid);
+}
+
+static int hsr_prp_ndo_vlan_rx_kill_vid(struct net_device *dev,
+					__be16 proto, u16 vid)
+{
+	struct hsr_prp_priv *priv;
+
+	priv = netdev_priv(dev);
+	return hsr_prp_add_del_vid(priv, false, proto, vid);
 }
 
 static const struct net_device_ops hsr_prp_device_ops = {
@@ -483,6 +517,8 @@ static const struct net_device_ops hsr_prp_device_ops = {
 	.ndo_change_rx_flags = hsr_prp_change_rx_flags,
 	.ndo_fix_features = hsr_prp_fix_features,
 	.ndo_set_rx_mode = hsr_prp_ndo_set_rx_mode,
+	.ndo_vlan_rx_add_vid = hsr_prp_ndo_vlan_rx_add_vid,
+	.ndo_vlan_rx_kill_vid = hsr_prp_ndo_vlan_rx_kill_vid,
 };
 
 static void hsr_prp_dev_setup(struct net_device *dev, struct device_type *type)
@@ -501,7 +537,8 @@ static void hsr_prp_dev_setup(struct net_device *dev, struct device_type *type)
 
 	dev->hw_features = NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_HIGHDMA |
 			   NETIF_F_GSO_MASK | NETIF_F_HW_CSUM |
-			   NETIF_F_HW_VLAN_CTAG_TX;
+			   NETIF_F_HW_VLAN_CTAG_TX |
+			   NETIF_F_HW_VLAN_CTAG_FILTER;
 
 	dev->features = dev->hw_features;
 
@@ -645,6 +682,7 @@ int hsr_prp_dev_finalize(struct net_device *hsr_prp_dev,
 	     (slave[1]->features & NETIF_F_HW_L2FW_DOFFLOAD)))
 		priv->l2_fwd_offloaded = true;
 
+	hsr_prp_dev->features |= NETIF_F_HW_VLAN_CTAG_FILTER;
 	res = register_netdevice(hsr_prp_dev);
 	if (res)
 		goto fail;
