@@ -434,6 +434,7 @@ static void hsr_prp_ndo_set_rx_mode(struct net_device *dev)
 	struct hsr_prp_priv *priv;
 
 	priv = netdev_priv(dev);
+	rcu_read_lock();
 	port_a = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_A);
 	port_b = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_B);
 
@@ -442,7 +443,11 @@ static void hsr_prp_ndo_set_rx_mode(struct net_device *dev)
 		dev_uc_sync_multiple(port_a->dev, dev);
 		dev_mc_sync_multiple(port_b->dev, dev);
 		dev_uc_sync_multiple(port_b->dev, dev);
+	} else {
+		netdev_err(dev,
+			   "port invalid when doing set_rx_mode\n");
 	}
+	rcu_read_unlock();
 }
 
 static void hsr_prp_change_rx_flags(struct net_device *dev, int change)
@@ -452,6 +457,7 @@ static void hsr_prp_change_rx_flags(struct net_device *dev, int change)
 
 	priv = netdev_priv(dev);
 
+	rcu_read_lock();
 	port_a = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_A);
 	port_b = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_B);
 
@@ -464,29 +470,49 @@ static void hsr_prp_change_rx_flags(struct net_device *dev, int change)
 					 dev->flags &
 					 IFF_ALLMULTI ? 1 : -1);
 		}
+	} else {
+		netdev_err(dev,
+			   "port invalid when doing change_rx_flags\n");
 	}
+	rcu_read_unlock();
 }
 
-static int hsr_prp_add_del_vid(struct hsr_prp_priv *priv, bool add,
+static int hsr_prp_add_del_vid(struct net_device *dev,
+			       struct hsr_prp_priv *priv, bool add,
 			       __be16 proto, u16 vid)
 {
 	struct hsr_prp_port *port_a, *port_b;
 	int ret = 0;
 
+	rcu_read_lock();
 	port_a = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_A);
 	port_b = hsr_prp_get_port(priv, HSR_PRP_PT_SLAVE_B);
 
-	if (!port_a || !port_b)
+	if (!port_a || !port_b) {
+		netdev_err(dev, "port invalid when doing add/del vid\n");
+		rcu_read_unlock();
 		return -ENODEV;
+	}
 
 	if (add) {
 		ret = vlan_vid_add(port_a->dev, proto, vid);
-		if (!ret)
+		if (!ret) {
 			ret = vlan_vid_add(port_b->dev, proto, vid);
+			if (ret) {
+				/* clean up port a */
+				netdev_err(dev,
+					   "port-b failed for add vid\n");
+				vlan_vid_del(port_a->dev, proto, vid);
+			}
+		} else {
+			netdev_err(dev,
+				   "port-a failed for add vid\n");
+		}
 	} else {
 		vlan_vid_del(port_a->dev, proto, vid);
 		vlan_vid_del(port_b->dev, proto, vid);
 	}
+	rcu_read_unlock();
 
 	return ret;
 }
@@ -497,7 +523,7 @@ static int hsr_prp_ndo_vlan_rx_add_vid(struct net_device *dev,
 	struct hsr_prp_priv *priv;
 
 	priv = netdev_priv(dev);
-	return hsr_prp_add_del_vid(priv, true, proto, vid);
+	return hsr_prp_add_del_vid(dev, priv, true, proto, vid);
 }
 
 static int hsr_prp_ndo_vlan_rx_kill_vid(struct net_device *dev,
@@ -506,10 +532,17 @@ static int hsr_prp_ndo_vlan_rx_kill_vid(struct net_device *dev,
 	struct hsr_prp_priv *priv;
 
 	priv = netdev_priv(dev);
-	return hsr_prp_add_del_vid(priv, false, proto, vid);
+	return hsr_prp_add_del_vid(dev, priv, false, proto, vid);
+}
+
+static int hsr_prp_ndo_init(struct net_device *ndev)
+{
+	netdev_lockdep_set_classes(ndev);
+	return 0;
 }
 
 static const struct net_device_ops hsr_prp_device_ops = {
+	.ndo_init = hsr_prp_ndo_init,
 	.ndo_change_mtu = hsr_prp_dev_change_mtu,
 	.ndo_open = hsr_prp_dev_open,
 	.ndo_stop = hsr_prp_dev_close,
