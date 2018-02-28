@@ -775,6 +775,24 @@ int iep_tx_timestamp(struct iep *iep, u16 ts_ofs, struct sk_buff *skb)
 	return 0;
 }
 
+int iep_get_timestamp(struct iep *iep, u16 ts_ofs, u64 *ns)
+{
+	void __iomem *sram = iep->sram;
+	u64 cycles;
+
+	/* get timestamp */
+	memcpy_fromio(&cycles, sram + ts_ofs, sizeof(cycles));
+	memset_io(sram + ts_ofs, 0, sizeof(cycles));
+
+	if (!cycles) {
+		*ns = 0;
+		return -ENOENT;
+	}
+
+	*ns = timecounter_cyc2time(&iep->tc, cycles);
+	return 0;
+}
+
 static int iep_dram_init(struct iep *iep)
 {
 	void __iomem *sram = iep->sram;
