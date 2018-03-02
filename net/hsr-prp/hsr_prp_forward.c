@@ -458,8 +458,13 @@ static void stripped_skb_get_shared_info(struct sk_buff *skb_stripped,
 	skb_hsr = frame->skb_hsr;
 	skb = skb_stripped;
 
-	if (is_hsr_l2ptp_evt(skb_hsr))
+	if (is_hsr_l2ptp_evt(skb_hsr)) {
+		/* Rx timestamp */
 		skb_hwtstamps(skb)->hwtstamp = skb_hwtstamps(skb_hsr)->hwtstamp;
+		/* Cut-through tx timestamp */
+		skb_redinfo_hwtstamps(skb)->hwtstamp =
+			skb_redinfo_hwtstamps(skb_hsr)->hwtstamp;
+	}
 
 	if (is_hsr_l2ptp(skb_hsr)) {
 		sred = skb_redinfo(skb);
