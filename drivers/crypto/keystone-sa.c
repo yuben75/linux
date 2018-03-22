@@ -29,6 +29,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/dma-mapping.h>
+#include <linux/firmware.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -36,6 +37,7 @@
 #include <linux/soc/ti/knav_dma.h>
 #include <linux/soc/ti/knav_qmss.h>
 #include <linux/soc/ti/knav_helpers.h>
+#include <crypto/des.h>
 #include "keystone-sa.h"
 #include "keystone-sa-hlp.h"
 
@@ -240,6 +242,9 @@ static void sa_rx_task(unsigned long data)
 	struct keystone_crypto_data *dev_data =
 		(struct keystone_crypto_data *)data;
 
+	sa_rx_completion_process(dev_data);
+
+	sa_rxpool_refill(dev_data);
 	knav_queue_enable_notify(dev_data->rx_compl_q);
 }
 
@@ -258,6 +263,7 @@ static void sa_tx_task(unsigned long data)
 	struct keystone_crypto_data *dev_data =
 		(struct keystone_crypto_data *)data;
 
+	sa_tx_completion_process(dev_data);
 	knav_queue_enable_notify(dev_data->tx_compl_q);
 }
 
@@ -563,6 +569,9 @@ static int keystone_crypto_remove(struct platform_device *pdev)
 	struct keystone_crypto_data *dev_data = platform_get_drvdata(pdev);
 	int ret = 0;
 
+	/* un-register crypto algorithms */
+	sa_unregister_algos(&pdev->dev);
+
 	/* Release DMA resources */
 	ret = sa_free_resources(dev_data);
 	/* Kill tasklets */
@@ -578,11 +587,29 @@ static int keystone_crypto_remove(struct platform_device *pdev)
 	return ret;
 }
 
+static int sa_request_firmware(struct device *dev)
+{
+	const struct firmware *fw;
+	int	ret;
+
+	ret = request_firmware(&fw, "sa_mci.fw", dev);
+	if (ret < 0) {
+		dev_err(dev, "request_firmware failed\n");
+		return ret;
+	}
+
+	memcpy(&sa_mci_tbl, fw->data, fw->size);
+
+	release_firmware(fw);
+	return 0;
+}
+
 static int keystone_crypto_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *node = pdev->dev.of_node;
 	struct keystone_crypto_data *dev_data;
+	u32 value;
 	int ret;
 
 	sa_ks2_dev = dev;
@@ -609,6 +636,23 @@ static int keystone_crypto_probe(struct platform_device *pdev)
 	}
 
 	tasklet_init(&dev_data->rx_task, sa_rx_task, (unsigned long)dev_data);
+	/* Enable the required sub-modules in SA */
+	ret = regmap_read(dev_data->sa_regmap, SA_CMD_STATUS_OFS, &value);
+	if (ret)
+		goto err_1;
+
+	value |= (SA_CMD_ENCSS_EN | SA_CMD_AUTHSS_EN |
+		  SA_CMD_CTXCACH_EN | SA_CMD_SA1_IN_EN |
+		  SA_CMD_SA0_IN_EN | SA_CMD_SA1_OUT_EN |
+		  SA_CMD_SA0_OUT_EN);
+
+	ret = regmap_write(dev_data->sa_regmap, SA_CMD_STATUS_OFS, value);
+	if (ret)
+		goto err_1;
+
+	tasklet_init(&dev_data->rx_task, sa_rx_task,
+		     (unsigned long)dev_data);
+
 	tasklet_init(&dev_data->tx_task, sa_tx_task, (unsigned long)dev_data);
 
 	/* Initialize memory pools used by the driver */
@@ -635,7 +679,17 @@ static int keystone_crypto_probe(struct platform_device *pdev)
 		goto err_3;
 	}
 
+	/* Initialize the SC-ID allocation lock */
+	spin_lock_init(&dev_data->scid_lock);
+
+	ret = sa_request_firmware(dev);
+	if (ret < 0)
+		goto err_3;
+
 	platform_set_drvdata(pdev, dev_data);
+
+	/* Register crypto algorithms */
+	sa_register_algos(dev);
 
 	dev_info(dev, "crypto accelerator enabled\n");
 	return 0;
