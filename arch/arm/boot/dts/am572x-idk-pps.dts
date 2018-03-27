@@ -19,6 +19,9 @@
 	pinctrl-3 = <&pps1_timer16_pwm2_on>;
 	pinctrl-4 = <&pps1_timer15_latch_on>;
 	pinctrl-5 = <&pps1_timer15_latch_off>;
+
+	pps-enable-gpios = <&gpio1 5 GPIO_ACTIVE_HIGH>;
+	ref-enable-gpios = <&gpio6 19 GPIO_ACTIVE_HIGH>;
 };
 
 &pruss2_eth {
