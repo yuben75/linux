@@ -17,8 +17,8 @@
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/debugfs.h>
-#include "hsr_main.h"
-#include "hsr_framereg.h"
+#include "hsr_prp_main.h"
+#include "hsr_prp_framereg.h"
 
 static void print_mac_address(struct seq_file *sfp, unsigned char *mac)
 {
@@ -78,14 +78,15 @@ static const struct file_operations hsr_prp_fops = {
  * When debugfs is configured this routine sets up the node_table file per
  * hsr/prp device for dumping the node_table entries
  */
-int hsr_prp_debugfs_init(struct hsr_prp_priv *priv)
+int hsr_prp_debugfs_init(struct hsr_prp_priv *priv,
+			 struct net_device *hsr_prp_dev)
 {
 	int rc = -1;
 	struct dentry *de = NULL;
 
 	de = debugfs_create_dir("hsr", NULL);
 	if (!de) {
-		pr_err("Cannot create hsr-prp debugfs root\n");
+		netdev_err(hsr_prp_dev, "Cannot create hsr-prp debugfs root\n");
 		return rc;
 	}
 
@@ -95,7 +96,8 @@ int hsr_prp_debugfs_init(struct hsr_prp_priv *priv)
 				 priv->node_tbl_root, priv,
 				 &hsr_prp_fops);
 	if (!de) {
-		pr_err("Cannot create hsr-prp node_table directory\n");
+		netdev_err(hsr_prp_dev,
+			   "Cannot create hsr-prp node_table directory\n");
 		return rc;
 	}
 	priv->node_tbl_file = de;

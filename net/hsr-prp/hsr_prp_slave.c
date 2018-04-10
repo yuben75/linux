@@ -9,15 +9,14 @@
  *	2011-2014 Arvid Brodin, arvid.brodin@alten.se
  */
 
-#include "hsr_slave.h"
+#include "hsr_prp_slave.h"
 #include <linux/etherdevice.h>
 #include <linux/if_arp.h>
 #include <linux/if_vlan.h>
-#include "hsr_main.h"
-#include "hsr_device.h"
-#include "hsr_forward.h"
-#include "hsr_framereg.h"
-
+#include "hsr_prp_main.h"
+#include "hsr_prp_device.h"
+#include "hsr_prp_forward.h"
+#include "hsr_prp_framereg.h"
 
 static rx_handler_result_t hsr_handle_frame(struct sk_buff **pskb)
 {
@@ -101,7 +100,6 @@ static int hsr_check_dev_ok(struct net_device *dev)
 	return 0;
 }
 
-
 /* Setup device to be added to the HSR bridge. */
 static int hsr_portdev_setup(struct net_device *dev, struct hsr_prp_port *port)
 {
@@ -145,11 +143,11 @@ int hsr_prp_add_port(struct hsr_prp_priv *priv, struct net_device *dev,
 	}
 
 	port = hsr_prp_get_port(priv, type);
-	if (port != NULL)
+	if (port)
 		return -EBUSY;	/* This port already exists */
 
 	port = kzalloc(sizeof(*port), GFP_KERNEL);
-	if (port == NULL)
+	if (!port)
 		return -ENOMEM;
 
 	if (type != HSR_PRP_PT_MASTER) {
@@ -186,7 +184,7 @@ void hsr_prp_del_port(struct hsr_prp_port *port)
 	list_del_rcu(&port->port_list);
 
 	if (port != master) {
-		if (master != NULL) {
+		if (master) {
 			netdev_update_features(master->dev);
 			dev_set_mtu(master->dev, hsr_prp_get_max_mtu(priv));
 		}

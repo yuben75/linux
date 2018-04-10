@@ -9,13 +9,13 @@
  *	2011-2014 Arvid Brodin, arvid.brodin@alten.se
  */
 
-#ifndef __HSR_SLAVE_H
-#define __HSR_SLAVE_H
+#ifndef __HSR_PRP_SLAVE_H
+#define __HSR_PRP_SLAVE_H
 
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
 #include <linux/rtnetlink.h>
-#include "hsr_main.h"
+#include "hsr_prp_main.h"
 
 int hsr_prp_add_port(struct hsr_prp_priv *hsr, struct net_device *dev,
 		     enum hsr_prp_port_type pt);
@@ -37,4 +37,4 @@ struct hsr_prp_port *hsr_prp_port_get_rcu(const struct net_device *dev)
 		rcu_dereference(dev->rx_handler_data) : NULL;
 }
 
-#endif /* __HSR_SLAVE_H */
+#endif /* __HSR_PRP_SLAVE_H */
