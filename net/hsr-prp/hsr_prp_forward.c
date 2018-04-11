@@ -311,6 +311,7 @@ static int hsr_prp_xmit(struct sk_buff *skb, struct hsr_prp_port *port,
 		 */
 		ether_addr_copy(eth_hdr(skb)->h_source, port->dev->dev_addr);
 	}
+	INC_CNT_TX(port->type, port->priv);
 	return dev_queue_xmit(skb);
 }
 
@@ -388,8 +389,18 @@ static void hsr_prp_forward_do(struct hsr_prp_frame_info *frame)
 			skb = frame_get_tagged_skb(frame, port);
 		else
 			skb = frame_get_stripped_skb(frame, port);
+
 		if (!skb) {
-			/* FIXME: Record the dropped frame? */
+			if (frame->port_rcv->type == HSR_PRP_PT_SLAVE_A ||
+			    frame->port_rcv->type ==  HSR_PRP_PT_SLAVE_B)
+				INC_CNT_RX_ERROR(frame->port_rcv->type,
+						 port->priv);
+			else {
+				struct net_device *master_dev =
+				hsr_prp_get_port(port->priv,
+						 HSR_PRP_PT_MASTER)->dev;
+				master_dev->stats.rx_dropped++;
+			}
 			continue;
 		}
 
@@ -544,6 +555,7 @@ void hsr_prp_forward_skb(struct sk_buff *skb, struct hsr_prp_port *port)
 	return;
 
 out_drop:
+	INC_CNT_RX_ERROR(port->type, port->priv);
 	port->dev->stats.tx_dropped++;
 	kfree_skb(skb);
 }
