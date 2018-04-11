@@ -116,7 +116,7 @@ static struct rtnl_link_ops hsr_link_ops __read_mostly = {
 	.maxtype	= IFLA_HSR_MAX,
 	.policy		= hsr_policy,
 	.priv_size	= sizeof(struct hsr_prp_priv),
-	.setup		= hsr_prp_dev_setup,
+	.setup		= hsr_dev_setup,
 	.newlink	= hsr_newlink,
 	.fill_info	= hsr_fill_info,
 };
@@ -232,8 +232,7 @@ fail:
  * Output: hsr ifindex, node mac address (copied from request),
  *	   age of latest frame from node over slave 1, slave 2 [ms]
  */
-static int hsr_prp_get_node_status(struct sk_buff *skb_in,
-				   struct genl_info *info)
+static int hsr_get_node_status(struct sk_buff *skb_in, struct genl_info *info)
 {
 	/* For receiving */
 	struct nlattr *na;
@@ -364,7 +363,7 @@ fail:
 
 /* Get a list of mac_address_a of all nodes known to this node (including self).
  */
-static int hsr_prp_get_node_list(struct sk_buff *skb_in, struct genl_info *info)
+static int hsr_get_node_list(struct sk_buff *skb_in, struct genl_info *info)
 {
 	/* For receiving */
 	struct nlattr *na;
@@ -448,14 +447,14 @@ static const struct genl_ops hsr_ops[] = {
 		.cmd = HSR_C_GET_NODE_STATUS,
 		.flags = 0,
 		.policy = hsr_genl_policy,
-		.doit = hsr_prp_get_node_status,
+		.doit = hsr_get_node_status,
 		.dumpit = NULL,
 	},
 	{
 		.cmd = HSR_C_GET_NODE_LIST,
 		.flags = 0,
 		.policy = hsr_genl_policy,
-		.doit = hsr_prp_get_node_list,
+		.doit = hsr_get_node_list,
 		.dumpit = NULL,
 	},
 };

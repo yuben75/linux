@@ -161,6 +161,8 @@ struct hsr_prp_port {
 	enum hsr_prp_port_type	type;
 };
 
+#define HSR	0
+#define PRP	1
 struct hsr_prp_priv {
 	struct rcu_head		rcu_head;
 	struct list_head	ports;
@@ -173,8 +175,11 @@ struct hsr_prp_priv {
 	int announce_count;
 	u16 sequence_nr;
 	u16 sup_sequence_nr;	/* For HSRv1 separate seq_nr for supervision */
-	u8 prot_ver;			/* Indicate if HSRv0 or HSRv1. */
-	spinlock_t seqnr_lock;		/* locking for sequence_nr */
+#define HSR_V0	0
+#define HSR_V1	1
+#define PRP_V1	2
+	u8 prot_ver;		/* Indicate if HSRv0 or HSRv1 or PRPv1 */
+	spinlock_t seqnr_lock;	/* locking for sequence_nr */
 	unsigned char		sup_multicast_addr[ETH_ALEN];
 #ifdef	CONFIG_DEBUG_FS
 	struct dentry *node_tbl_root;
@@ -200,8 +205,9 @@ static inline u16 hsr_get_skb_sequence_nr(struct sk_buff *skb)
 	return ntohs(hsr_ethhdr->hsr_tag.sequence_nr);
 }
 
-int hsr_prp_register_notifier(void);
-void hsr_prp_unregister_notifier(void);
+int hsr_prp_register_notifier(u8 proto);
+void hsr_prp_unregister_notifier(u8 proto);
+
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 int hsr_prp_debugfs_init(struct hsr_prp_priv *priv,
 			 struct net_device *hsr_prp_dev);
