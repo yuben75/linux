@@ -20,23 +20,23 @@
  * Table 8.
  * All values in milliseconds.
  */
-#define HSR_LIFE_CHECK_INTERVAL		 2000 /* ms */
-#define HSR_NODE_FORGET_TIME		60000 /* ms */
-#define HSR_ANNOUNCE_INTERVAL		  100 /* ms */
+#define HSR_PRP_LIFE_CHECK_INTERVAL	 2000 /* ms */
+#define HSR_PRP_NODE_FORGET_TIME	60000 /* ms */
+#define HSR_PRP_ANNOUNCE_INTERVAL	  100 /* ms */
 
 
 /* By how much may slave1 and slave2 timestamps of latest received frame from
  * each node differ before we notify of communication problem?
  */
-#define MAX_SLAVE_DIFF			 3000 /* ms */
-#define HSR_SEQNR_START			(USHRT_MAX - 1024)
-#define HSR_SUP_SEQNR_START		(HSR_SEQNR_START / 2)
+#define HSR_PRP_MAX_SLAVE_DIFF		 3000 /* ms */
+#define HSR_PRP_SEQNR_START		(USHRT_MAX - 1024)
+#define HSR_PRP_SUP_SEQNR_START		(HSR_PRP_SEQNR_START / 2)
 
 
 /* How often shall we check for broken ring and remove node entries older than
- * HSR_NODE_FORGET_TIME?
+ * HSR_PRP_NODE_FORGET_TIME?
  */
-#define PRUNE_PERIOD			 3000 /* ms */
+#define HSR_PRP_PRUNE_PERIOD		 3000 /* ms */
 
 
 #define HSR_TLV_ANNOUNCE		   22
@@ -57,7 +57,7 @@ struct hsr_tag {
 	__be16		encap_proto;
 } __packed;
 
-#define HSR_HLEN	6
+#define HSR_PRP_HLEN	6
 
 #define HSR_V1_SUP_LSDUSIZE		52
 
@@ -103,66 +103,68 @@ struct hsr_ethhdr {
 /* HSR Supervision Frame data types.
  * Field names as defined in the IEC:2010 standard for HSR.
  */
-struct hsr_sup_tag {
-	__be16		path_and_HSR_Ver;
+struct hsr_prp_sup_tag {
+	__be16		path_and_HSR_ver;
 	__be16		sequence_nr;
-	__u8		HSR_TLV_Type;
-	__u8		HSR_TLV_Length;
+	__u8		HSR_TLV_type;
+	__u8		HSR_TLV_length;
 } __packed;
 
-struct hsr_sup_payload {
-	unsigned char	MacAddressA[ETH_ALEN];
+struct hsr_prp_sup_payload {
+	unsigned char	mac_address_a[ETH_ALEN];
 } __packed;
 
-static inline u16 get_hsr_stag_path(struct hsr_sup_tag *hst)
+static inline u16 get_hsr_stag_path(struct hsr_prp_sup_tag *hst)
 {
 	return get_hsr_tag_path((struct hsr_tag *) hst);
 }
 
-static inline u16 get_hsr_stag_HSR_ver(struct hsr_sup_tag *hst)
+static inline u16 get_hsr_stag_HSR_ver(struct hsr_prp_sup_tag *hst)
 {
 	return get_hsr_tag_LSDU_size((struct hsr_tag *) hst);
 }
 
-static inline void set_hsr_stag_path(struct hsr_sup_tag *hst, u16 path)
+static inline void set_hsr_stag_path(struct hsr_prp_sup_tag *hst,
+				     u16 path)
 {
 	set_hsr_tag_path((struct hsr_tag *) hst, path);
 }
 
-static inline void set_hsr_stag_HSR_Ver(struct hsr_sup_tag *hst, u16 HSR_Ver)
+static inline void set_hsr_stag_HSR_ver(struct hsr_prp_sup_tag *hst,
+					u16 HSR_ver)
 {
-	set_hsr_tag_LSDU_size((struct hsr_tag *) hst, HSR_Ver);
+	set_hsr_tag_LSDU_size((struct hsr_tag *)hst, HSR_ver);
 }
 
 struct hsrv0_ethhdr_sp {
 	struct ethhdr		ethhdr;
-	struct hsr_sup_tag	hsr_sup;
+	struct hsr_prp_sup_tag	hsr_sup;
 } __packed;
 
 struct hsrv1_ethhdr_sp {
 	struct ethhdr		ethhdr;
 	struct hsr_tag		hsr;
-	struct hsr_sup_tag	hsr_sup;
+	struct hsr_prp_sup_tag	hsr_sup;
 } __packed;
 
 
-enum hsr_port_type {
-	HSR_PT_NONE = 0,	/* Must be 0, used by framereg */
-	HSR_PT_SLAVE_A,
-	HSR_PT_SLAVE_B,
-	HSR_PT_INTERLINK,
-	HSR_PT_MASTER,
-	HSR_PT_PORTS,	/* This must be the last item in the enum */
+enum hsr_prp_port_type {
+	HSR_PRP_PT_NONE = 0,	/* Must be 0, used by framereg */
+	HSR_PRP_PT_SLAVE_A,
+	HSR_PRP_PT_SLAVE_B,
+	HSR_PRP_PT_INTERLINK,
+	HSR_PRP_PT_MASTER,
+	HSR_PRP_PT_PORTS,	/* This must be the last item in the enum */
 };
 
-struct hsr_port {
+struct hsr_prp_port {
 	struct list_head	port_list;
 	struct net_device	*dev;
-	struct hsr_priv		*hsr;
-	enum hsr_port_type	type;
+	struct hsr_prp_priv	*priv;
+	enum hsr_prp_port_type	type;
 };
 
-struct hsr_priv {
+struct hsr_prp_priv {
 	struct rcu_head		rcu_head;
 	struct list_head	ports;
 	struct list_head	node_db;	/* Known HSR nodes */
@@ -173,9 +175,9 @@ struct hsr_priv {
 	bool			l2_fwd_offloaded; /* L2 forward in hw */
 	int announce_count;
 	u16 sequence_nr;
-	u16 sup_sequence_nr;			/* For HSRv1 separate seq_nr for supervision */
-	u8 protVersion;					/* Indicate if HSRv0 or HSRv1. */
-	spinlock_t seqnr_lock;			/* locking for sequence_nr */
+	u16 sup_sequence_nr;	/* For HSRv1 separate seq_nr for supervision */
+	u8 prot_ver;			/* Indicate if HSRv0 or HSRv1. */
+	spinlock_t seqnr_lock;		/* locking for sequence_nr */
 	unsigned char		sup_multicast_addr[ETH_ALEN];
 #ifdef	CONFIG_DEBUG_FS
 	struct dentry *node_tbl_root;
@@ -183,10 +185,14 @@ struct hsr_priv {
 #endif
 };
 
-#define hsr_for_each_port(hsr, port) \
-	list_for_each_entry_rcu((port), &(hsr)->ports, port_list)
+#define hsr_prp_for_each_port(hsr_prp, port) \
+	list_for_each_entry_rcu((port), &(hsr_prp)->ports, port_list)
 
-struct hsr_port *hsr_port_get_hsr(struct hsr_priv *hsr, enum hsr_port_type pt);
+struct hsr_prp_port *hsr_prp_get_port(struct hsr_prp_priv *hsr_prp,
+				      enum hsr_prp_port_type pt);
+int hsr_prp_netdev_notify(struct notifier_block *nb, unsigned long event,
+			  void *ptr);
+
 
 /* Caller must ensure skb is a valid HSR frame */
 static inline u16 hsr_get_skb_sequence_nr(struct sk_buff *skb)
@@ -198,15 +204,15 @@ static inline u16 hsr_get_skb_sequence_nr(struct sk_buff *skb)
 }
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
-int hsr_prp_debugfs_init(struct hsr_priv *priv);
-void hsr_prp_debugfs_term(struct hsr_priv *priv);
+int hsr_prp_debugfs_init(struct hsr_prp_priv *priv);
+void hsr_prp_debugfs_term(struct hsr_prp_priv *priv);
 #else
-static inline int hsr_prp_debugfs_init(struct hsr_priv *priv)
+static inline int hsr_prp_debugfs_init(struct hsr_prp_priv *priv)
 {
 	return 0;
 }
 
-static inline void hsr_prp_debugfs_term(struct hsr_priv *priv)
+static inline void hsr_prp_debugfs_term(struct hsr_prp_priv *priv)
 {}
 #endif
 
