@@ -23,7 +23,6 @@ static rx_handler_result_t hsr_handle_frame(struct sk_buff **pskb)
 	struct sk_buff *skb = *pskb;
 	struct hsr_prp_port *port;
 	struct hsr_prp_priv *priv;
-
 	u16 protocol;
 
 	rcu_read_lock(); /* hsr->node_db, hsr->ports */
@@ -41,10 +40,11 @@ static rx_handler_result_t hsr_handle_frame(struct sk_buff **pskb)
 		goto finish_consume;
 	}
 
-	/* For HSR, non tagged frames are expected, but for PRP
+	/* For HSR, non tagged frames are unexpected, but for PRP
 	 * there could be non tagged frames as well.
 	 */
 	protocol = eth_hdr(skb)->h_proto;
+
 	if (protocol != htons(ETH_P_PRP) &&
 	    protocol != htons(ETH_P_HSR) &&
 	    port->priv->prot_ver <= HSR_V1)
@@ -101,12 +101,6 @@ static int hsr_check_dev_ok(struct net_device *dev)
 
 	if (hsr_prp_port_exists(dev)) {
 		netdev_info(dev, "This device is already a HSR slave.\n");
-		return -EINVAL;
-	}
-
-	if (is_vlan_dev(dev)) {
-		netdev_info(dev,
-			    "HSR on top of VLAN is not yet supported in this driver.\n");
 		return -EINVAL;
 	}
 
