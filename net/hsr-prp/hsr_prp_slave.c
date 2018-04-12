@@ -48,7 +48,8 @@ static rx_handler_result_t hsr_handle_frame(struct sk_buff **pskb)
 
 	if (protocol != htons(ETH_P_PRP) &&
 	    protocol != htons(ETH_P_HSR) &&
-	    port->priv->prot_ver <= HSR_V1)
+	    port->priv->prot_ver <= HSR_V1 &&
+	    !priv->rx_offloaded)
 		goto finish_pass;
 
 	/* Frame is a HSR or PRP frame or frame form a SAN. For
