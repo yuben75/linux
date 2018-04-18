@@ -3362,6 +3362,8 @@ static int packet_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 
 	sock_recv_ts_and_drops(msg, sk, skb);
 
+	sock_recv_redundant_info(msg, sk, skb);
+
 	if (msg->msg_name) {
 		/* If the address length field is there to be filled
 		 * in, we fill it in now.
