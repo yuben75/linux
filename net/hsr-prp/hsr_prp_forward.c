@@ -474,7 +474,7 @@ static void stripped_skb_get_shared_info(struct sk_buff *skb_stripped,
 	struct hsr_ethhdr *hsr_ethhdr;
 	u16 s;
 
-	if (port_rcv->priv->prot_ver > HSR_V1)
+	if (port_rcv->priv->prot_version > HSR_V1)
 		return;
 
 	if (!frame->skb_hsr)
