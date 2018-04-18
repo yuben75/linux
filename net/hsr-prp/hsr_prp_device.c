@@ -609,9 +609,31 @@ static int hsr_prp_get_ts_info(struct net_device *dev,
 	return ret;
 }
 
+static int hsr_prp_set_dump(struct net_device *dev, struct ethtool_dump *dump)
+{
+	struct hsr_prp_priv *priv = netdev_priv(dev);
+	struct hsr_prp_port *port;
+	const struct ethtool_ops *ops;
+	int ret = -ENOTSUPP;
+
+	hsr_prp_for_each_port(priv, port) {
+		if (is_slave_port(port)) {
+			ops = port->dev->ethtool_ops;
+			if (ops && ops->set_dump) {
+				ret = ops->set_dump(port->dev, dump);
+				if (ret < 0)
+					return ret;
+			}
+		}
+	}
+
+	return 0;
+}
+
 static const struct ethtool_ops hsr_prp_ethtool_ops = {
 	.get_link = ethtool_op_get_link,
 	.get_ts_info = hsr_prp_get_ts_info,
+	.set_dump = hsr_prp_set_dump,
 };
 
 static void hsr_prp_dev_setup(struct net_device *dev, struct device_type *type)
