@@ -184,6 +184,7 @@ struct prueth_emac {
  * @eth_node: node for each emac node
  * @emac: emac data for three ports, one host and two physical
  * @registered_netdevs: net device for each registered emac
+ * @pruss_id: PRUSS instance id
  */
 struct prueth {
 	struct device *dev;
@@ -195,6 +196,7 @@ struct prueth {
 	struct device_node *eth_node[PRUETH_NUM_MACS];
 	struct prueth_emac *emac[PRUETH_NUM_MACS];
 	struct net_device *registered_netdevs[PRUETH_NUM_MACS];
+	int pruss_id;
 };
 
 static inline u32 prueth_read_reg(struct prueth *prueth,
@@ -1623,7 +1625,8 @@ static int prueth_probe(struct platform_device *pdev)
 		}
 	}
 
-	pruss = pruss_get(prueth->pru0 ? prueth->pru0 : prueth->pru1);
+	pruss = pruss_get(prueth->pru0 ? prueth->pru0 : prueth->pru1,
+			  &prueth->pruss_id);
 	if (IS_ERR(pruss)) {
 		ret = PTR_ERR(pruss);
 		dev_err(dev, "unable to get pruss handle\n");
