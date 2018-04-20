@@ -228,6 +228,27 @@ int pruss_release_mem_region(struct pruss *pruss,
 }
 EXPORT_SYMBOL_GPL(pruss_release_mem_region);
 
+static int pruss_set_id(struct pruss *pruss)
+{
+	int i;
+	int ret = -EINVAL;
+	static const phys_addr_t addrs[] = { 0x4a300000,
+					     0x54400000, 0x54440000,
+					     0x4b200000, 0x4b280000,
+					     0x20a80000, 0x20ac0000, };
+	static const int ids[] = { 0, 1, 0, 1, 2, 0, 1 };
+
+	for (i = 0; i < ARRAY_SIZE(addrs); i++) {
+		if (pruss->mem_regions[0].pa == addrs[i]) {
+			pruss->id = ids[i];
+			ret = 0;
+			break;
+		}
+	}
+
+	return ret;
+}
+
 static const
 struct pruss_private_data *pruss_get_private_data(struct platform_device *pdev)
 {
@@ -343,6 +364,10 @@ static int pruss_probe(struct platform_device *pdev)
 			pruss->mem_regions[i].size, pruss->mem_regions[i].va);
 	}
 	of_node_put(np);
+
+	ret = pruss_set_id(pruss);
+	if (ret < 0)
+		return ret;
 
 	platform_set_drvdata(pdev, pruss);
 
