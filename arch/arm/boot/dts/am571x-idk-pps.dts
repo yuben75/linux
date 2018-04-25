@@ -127,5 +127,8 @@
 };
 
 &ptp_bc {
+	pps-sel0-gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;
+	pps-sel1-gpios = <&gpio6 7 GPIO_ACTIVE_HIGH>;
+
 	status = "okay";
 };
