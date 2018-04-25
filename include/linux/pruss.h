@@ -103,7 +103,6 @@ enum pruss_gpi_mode {
  */
 enum pruss_syscon {
 	PRUSS_SYSCON_CFG = 0,
-	PRUSS_SYSCON_IEP,
 	PRUSS_SYSCON_MII_RT,
 	PRUSS_SYSCON_MAX,
 };
@@ -138,6 +137,7 @@ enum pruss_mem {
 	PRUSS_MEM_DRAM0 = 0,
 	PRUSS_MEM_DRAM1,
 	PRUSS_MEM_SHRD_RAM2,
+	PRUSS_MEM_IEP,
 	PRUSS_MEM_MAX,
 };
 

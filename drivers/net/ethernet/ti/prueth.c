@@ -48,7 +48,7 @@ MODULE_PARM_DESC(debug_level, "PRUETH debug level (NETIF_MSG bits)");
 
 /* ensure that order of PRUSS mem regions is same as above */
 static enum pruss_mem pruss_mem_ids[] = { PRUSS_MEM_DRAM0, PRUSS_MEM_DRAM1,
-					  PRUSS_MEM_SHRD_RAM2 };
+					  PRUSS_MEM_SHRD_RAM2, PRUSS_MEM_IEP };
 
 static int pruss0_ethtype = PRUSS_ETHTYPE_EMAC;
 module_param(pruss0_ethtype, int, 0444);
@@ -359,10 +359,8 @@ static void prueth_init_mem(struct prueth *prueth)
 	prueth_clearmem(prueth, PRUETH_MEM_DRAM0);
 	prueth_clearmem(prueth, PRUETH_MEM_DRAM1);
 
-#if 0
-// TODO
+
 	prueth_clearmem(prueth, PRUETH_MEM_IEP);
-#endif
 }
 
 static int prueth_hostinit(struct prueth *prueth)
@@ -2340,9 +2338,9 @@ static int emac_ndo_open(struct net_device *ndev)
 				goto free_ptp_irq;
 		}
 
-		pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_IEP, 0,
-				    IEP_GLOBAL_CFG_REG_MASK,
-				    IEP_GLOBAL_CFG_REG_DEF_VAL);
+		prueth_set_reg(prueth, PRUETH_MEM_IEP, 0,
+			       IEP_GLOBAL_CFG_REG_MASK,
+			       IEP_GLOBAL_CFG_REG_DEF_VAL);
 	}
 
 	/* reset and start PRU firmware */

@@ -121,8 +121,7 @@ int pruss_regmap_read(struct pruss *pruss, enum pruss_syscon mod,
 	    mod >= PRUSS_SYSCON_MAX)
 		return -EINVAL;
 
-	map = (mod == PRUSS_SYSCON_CFG) ? pruss->cfg :
-	       ((mod == PRUSS_SYSCON_IEP ? pruss->iep : pruss->mii_rt));
+	map = (mod == PRUSS_SYSCON_CFG) ? pruss->cfg : pruss->mii_rt;
 
 	return regmap_read(map, reg, val);
 }
@@ -150,8 +149,7 @@ int pruss_regmap_update(struct pruss *pruss, enum pruss_syscon mod,
 	    mod >= PRUSS_SYSCON_MAX)
 		return -EINVAL;
 
-	map = (mod == PRUSS_SYSCON_CFG) ? pruss->cfg :
-	       ((mod == PRUSS_SYSCON_IEP ? pruss->iep : pruss->mii_rt));
+	map = (mod == PRUSS_SYSCON_CFG) ? pruss->cfg : pruss->mii_rt;
 
 	return regmap_update_bits(map, reg, mask, val);
 }
@@ -283,7 +281,7 @@ static int pruss_probe(struct platform_device *pdev)
 	struct resource res;
 	int ret, i, index;
 	const struct pruss_private_data *data;
-	const char *mem_names[PRUSS_MEM_MAX] = { "dram0", "dram1", "shrdram2" };
+	const char *mem_names[PRUSS_MEM_MAX] = { "dram0", "dram1", "shrdram2", "iep" };
 
 	if (!node) {
 		dev_err(dev, "Non-DT platform device not supported\n");
@@ -316,15 +314,6 @@ static int pruss_probe(struct platform_device *pdev)
 	pruss->cfg = syscon_node_to_regmap(np);
 	of_node_put(np);
 	if (IS_ERR(pruss->cfg))
-		return -ENODEV;
-
-	np = of_get_child_by_name(node, "iep");
-	if (!np)
-		return -ENODEV;
-
-	pruss->iep = syscon_node_to_regmap(np);
-	of_node_put(np);
-	if (IS_ERR(pruss->iep))
 		return -ENODEV;
 
 	np = of_get_child_by_name(node, "mii_rt");
