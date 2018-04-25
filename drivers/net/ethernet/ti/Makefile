@@ -24,5 +24,5 @@ obj-$(CONFIG_TI_KEYSTONE_NETCP_ETHSS) += keystone_netcp_ethss.o
 keystone_netcp_ethss-y := netcp_ethss.o netcp_sgmii.o netcp_xgbepcsr.o
 
 obj-$(CONFIG_TI_PRUETH) += ti_prueth.o
-ti_prueth-y := prueth.o prueth_node_tbl.o
+ti_prueth-y := prueth.o iep.o prueth_node_tbl.o
 ti_prueth-$(CONFIG_DEBUG_FS) += prueth_dbgfs.o
