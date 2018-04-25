@@ -22,6 +22,9 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/kthread.h>
+#ifdef CONFIG_PREEMPT_RT_FULL
+#include <linux/swork.h>
+#endif
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
@@ -31,11 +34,15 @@
 #include <linux/phy.h>
 #include <linux/pruss.h>
 #include <linux/remoteproc.h>
+#include <linux/net_tstamp.h>
+#include <linux/ptp_classify.h>
 
+#include "icss_time_sync.h"
 #include "prueth.h"
 #include "icss_mii_rt.h"
 #include "icss_switch.h"
 #include "hsr_prp_firmware.h"
+#include "iep.h"
 #include "prueth_dbgfs.h"
 #include "prueth_node_tbl.h"
 
@@ -123,6 +130,266 @@ void prueth_set_reg(struct prueth *prueth, enum prueth_mem region,
 	val &= ~mask;
 	val |= (set & mask);
 	prueth_write_reg(prueth, region, reg, val);
+}
+
+static inline bool pruptp_is_tx_enabled(struct prueth *prueth)
+{
+	return !!prueth->iep->ptp_tx_enable;
+}
+
+static inline void emac_ptp_rx_enable(struct prueth_emac *emac, int enable)
+{
+	emac->ptp_rx_enable = enable;
+}
+
+static inline bool emac_is_ptp_rx_enabled(struct prueth_emac *emac)
+{
+	return !!emac->ptp_rx_enable;
+}
+
+static inline void emac_ptp_tx_enable(struct prueth_emac *emac, int enable)
+{
+	emac->ptp_tx_enable = enable;
+}
+
+static inline bool emac_is_ptp_tx_enabled(struct prueth_emac *emac)
+{
+	return !!emac->ptp_tx_enable;
+}
+
+static u8 pruptp_ts_msgtype(struct sk_buff *skb)
+{
+	unsigned int ptp_class = ptp_classify_raw(skb);
+	u16 *seqid;
+	unsigned int offset = 0;
+	u8 *msgtype, *data = skb->data;
+
+	if (ptp_class == PTP_CLASS_NONE)
+		return 0xff;
+
+	if (ptp_class & PTP_CLASS_VLAN)
+		offset += VLAN_HLEN;
+
+	switch (ptp_class & PTP_CLASS_PMASK) {
+	case PTP_CLASS_IPV4:
+		offset += ETH_HLEN + IPV4_HLEN(data + offset) + UDP_HLEN;
+		break;
+	case PTP_CLASS_IPV6:
+		offset += ETH_HLEN + IP6_HLEN + UDP_HLEN;
+		break;
+	case PTP_CLASS_L2:
+		offset += ETH_HLEN;
+		break;
+	default:
+		return 0xff;
+	}
+
+	if (skb->len + ETH_HLEN < offset + OFF_PTP_SEQUENCE_ID + sizeof(*seqid))
+		return 0xff;
+
+	if (unlikely(ptp_class & PTP_CLASS_V1))
+		msgtype = data + offset + OFF_PTP_CONTROL;
+	else
+		msgtype = data + offset;
+
+	return (*msgtype & 0xf);
+}
+
+#define TS_NOTIFY_SIZE	1
+#define TS_FIELD_SIZE	12
+#define NUM_TS_EVENTS	3
+
+static void pruptp_reset_tx_ts(struct prueth_emac *emac)
+{
+	struct prueth *prueth = emac->prueth;
+	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
+	u32 ts_notify_ofs, ts_ofs;
+
+	/* SYNC notify */
+	ts_ofs = TX_SYNC_TIMESTAMP_OFFSET_P1 +
+		 (emac->port_id - 1) * NUM_TS_EVENTS * TS_FIELD_SIZE;
+	ts_notify_ofs = TX_TS_NOTIFICATION_OFFSET_SYNC_P1 +
+			NUM_TS_EVENTS * TS_NOTIFY_SIZE *
+			(emac->port_id - 1);
+	writeb(0, sram + ts_notify_ofs);
+	iep_reset_timestamp(prueth->iep, ts_ofs);
+
+	/* PDELAY_REQ */
+	ts_ofs += TS_FIELD_SIZE;
+	ts_notify_ofs += TS_NOTIFY_SIZE;
+	writeb(0, sram + ts_notify_ofs);
+	iep_reset_timestamp(prueth->iep, ts_ofs);
+
+	/* PDELAY_RSP */
+	ts_ofs += TS_FIELD_SIZE;
+	ts_notify_ofs += TS_NOTIFY_SIZE;
+	writeb(0, sram + ts_notify_ofs);
+	iep_reset_timestamp(prueth->iep, ts_ofs);
+}
+
+static int pruptp_proc_tx_ts(struct prueth_emac *emac,
+			     u8 ts_msgtype, u16 ts_ofs, u32 ts_notify_mask)
+{
+	struct prueth *prueth = emac->prueth;
+	struct sk_buff *skb;
+	int ret;
+	unsigned long flags;
+
+	/* get the msg from list */
+	spin_lock_irqsave(&emac->ev_msg_lock, flags);
+	skb = emac->tx_ev_msg[ts_msgtype];
+	emac->tx_ev_msg[ts_msgtype] = NULL;
+	spin_unlock_irqrestore(&emac->ev_msg_lock, flags);
+	if (!skb) {
+		netdev_err(emac->ndev,
+			   "no tx msg %u found waiting for ts\n", ts_msgtype);
+		return -ENOMSG;
+	}
+
+	/* get the timestamp */
+	ret = iep_tx_timestamp(prueth->iep, ts_ofs, skb);
+	if (ret < 0) {
+		netdev_err(emac->ndev,
+			   "invalid timestamp for tx msg %u\n", ts_msgtype);
+	}
+
+	dev_consume_skb_any(skb);
+
+	return 0;
+}
+
+static void _pruptp_tx_ts_work(struct prueth_emac *emac)
+{
+	struct prueth *prueth = emac->prueth;
+	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
+	u32 ts_notify_ofs, ts_ofs, ts_notify_mask = 0;
+
+	/* Assumes timestamps for a port are in consecutive mem loc
+	 * and port2's timestamps are right after port1's
+	 */
+
+	/* Find out what ptp event message(s) raise(s) the intr
+	 * and process the timestamp
+	 */
+	/* SYNC notify */
+	ts_ofs = TX_SYNC_TIMESTAMP_OFFSET_P1 +
+		 (emac->port_id - 1) * NUM_TS_EVENTS * TS_FIELD_SIZE;
+	ts_notify_ofs = TX_TS_NOTIFICATION_OFFSET_SYNC_P1 +
+			NUM_TS_EVENTS * TS_NOTIFY_SIZE *
+			(emac->port_id - 1);
+
+	/* get and reset the ts notifications */
+	memcpy_fromio(&ts_notify_mask, sram + ts_notify_ofs, 3);
+	memset_io(sram + ts_notify_ofs, 0, 3);
+
+	if (ts_notify_mask & 0x000000ff) {
+		pruptp_proc_tx_ts(emac, PTP_SYNC_MSG_ID, ts_ofs,
+				  ts_notify_mask);
+	}
+
+	/* PDELAY_REQ */
+	ts_ofs += TS_FIELD_SIZE;
+	if (ts_notify_mask & 0x0000ff00) {
+		pruptp_proc_tx_ts(emac, PTP_PDLY_REQ_MSG_ID, ts_ofs,
+				  ts_notify_mask);
+	}
+
+	/* PDELAY_RSP */
+	ts_ofs += TS_FIELD_SIZE;
+	if (ts_notify_mask & 0x00ff0000) {
+		pruptp_proc_tx_ts(emac, PTP_PDLY_RSP_MSG_ID, ts_ofs,
+				  ts_notify_mask);
+	}
+}
+
+#ifdef CONFIG_PREEMPT_RT_FULL
+static void pruptp_tx_ts_work(struct swork_event *event)
+{
+	struct prueth_emac *emac =
+		container_of(event, struct prueth_emac, ptp_tx_work_event);
+
+	_pruptp_tx_ts_work(emac);
+}
+
+static void prueth_queue_ptp_tx_work(struct prueth_emac *emac)
+{
+	swork_queue(&emac->ptp_tx_work_event);
+}
+
+static void prueth_init_ptp_tx_work(struct prueth_emac *emac)
+{
+	WARN_ON(swork_get());
+	INIT_SWORK(&emac->ptp_tx_work_event, pruptp_tx_ts_work);
+}
+
+static void prueth_cancel_ptp_tx_work(struct prueth_emac *emac) { }
+
+static void prueth_clean_ptp_tx_work(void)
+{
+	swork_put();
+}
+
+#else /* !CONFIG_PREEMPT_RT_FULL */
+
+static void pruptp_tx_ts_work(struct work_struct *event)
+{
+	struct prueth_emac *emac =
+		container_of(event, struct prueth_emac, ptp_tx_work_event);
+
+	_pruptp_tx_ts_work(emac);
+}
+
+static void prueth_queue_ptp_tx_work(struct prueth_emac *emac)
+{
+	schedule_work(&emac->ptp_tx_work_event);
+}
+
+static void prueth_init_ptp_tx_work(struct prueth_emac *emac)
+{
+	INIT_WORK(&emac->ptp_tx_work_event, pruptp_tx_ts_work);
+}
+
+static void prueth_cancel_ptp_tx_work(struct prueth_emac *emac)
+{
+	cancel_work_sync(&emac->ptp_tx_work_event);
+}
+
+static void prueth_clean_ptp_tx_work(void) { }
+
+#endif /* !CONFIG_PREEMPT_RT_FULL */
+
+static int pruptp_rx_timestamp(struct prueth_emac *emac, struct sk_buff *skb)
+{
+	struct prueth *prueth = emac->prueth;
+	u32 ts_ofs;
+	u8 ts_msgtype;
+	int ret;
+
+	if (!emac_is_ptp_rx_enabled(emac))
+		return -EPERM;
+
+	ts_msgtype = pruptp_ts_msgtype(skb);
+	if ((ts_msgtype != PTP_SYNC_MSG_ID) &&
+	    (ts_msgtype != PTP_PDLY_REQ_MSG_ID) &&
+	    (ts_msgtype != PTP_PDLY_RSP_MSG_ID))
+		return -ENOENT;
+
+	/* get the ts location for this port */
+	ts_ofs = RX_SYNC_TIMESTAMP_OFFSET_P1 +
+		 (emac->port_id - 1) * NUM_TS_EVENTS * TS_FIELD_SIZE;
+
+	if (ts_msgtype == PTP_PDLY_REQ_MSG_ID)
+		ts_ofs += TS_FIELD_SIZE;
+	else if (ts_msgtype == PTP_PDLY_RSP_MSG_ID)
+		ts_ofs += (2 * TS_FIELD_SIZE);
+
+	ret = iep_rx_timestamp(prueth->iep, ts_ofs, skb);
+	if (ret < 0) {
+		netdev_err(emac->ndev, "invalid timestamp for rx msg %u\n",
+			   ts_msgtype);
+	}
+
+	return ret;
 }
 
 static struct prueth_queue_info queue_infos[PRUETH_PORT_QUEUE_MAX][NUM_QUEUES];
@@ -934,11 +1201,40 @@ static void emac_adjust_link(struct net_device *ndev)
 static irqreturn_t emac_tx_hardirq(int irq, void *dev_id)
 {
 	struct net_device *ndev = (struct net_device *)dev_id;
+	struct prueth_emac *emac = netdev_priv(ndev);
 
 	if (unlikely(netif_queue_stopped(ndev)))
 		netif_wake_queue(ndev);
 
+	if (PRUETH_HAS_PTP(emac->prueth) && emac_is_ptp_tx_enabled(emac))
+		prueth_queue_ptp_tx_work(emac);
+
 	return IRQ_HANDLED;
+}
+
+static inline int emac_tx_ts_enqueue(struct prueth_emac *emac,
+				     struct sk_buff *skb)
+{
+	unsigned long flags;
+	u8 msg_t = pruptp_ts_msgtype(skb);
+
+	if (msg_t > PTP_PDLY_RSP_MSG_ID) {
+		netdev_err(emac->ndev, "invalid msg_t %u\n", msg_t);
+		return -EINVAL;
+	}
+
+	spin_lock_irqsave(&emac->ev_msg_lock, flags);
+	if (emac->tx_ev_msg[msg_t]) {
+		spin_unlock_irqrestore(&emac->ev_msg_lock, flags);
+		netdev_err(emac->ndev, "msg %u finds ts queue occupied\n",
+			   msg_t);
+		return -EBUSY;
+	}
+
+	skb_get(skb);
+	emac->tx_ev_msg[msg_t] = skb;
+	spin_unlock_irqrestore(&emac->ev_msg_lock, flags);
+	return 0;
 }
 
 /**
@@ -1111,6 +1407,15 @@ static int prueth_tx_enqueue(struct prueth_emac *emac, struct sk_buff *skb,
 		memcpy(dst_addr, src_addr, remaining);
 	} else {
 		memcpy(dst_addr, src_addr, pktlen);
+	}
+
+	/* queue the skb to wait for tx ts before it is passed
+	 * to firmware
+	 */
+	if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP &&
+	    PRUETH_HAS_PTP(prueth) && emac_is_ptp_tx_enabled(emac)) {
+		skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
+		emac_tx_ts_enqueue(emac, skb);
 	}
 
 	/* update first buffer descriptor */
@@ -1309,6 +1614,9 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 
 	if (!pkt_info.sv_frame) {
 		skb_put(skb, pkt_info.length);
+
+		if (PRUETH_HAS_PTP(emac->prueth))
+			pruptp_rx_timestamp(emac, skb);
 
 		/* send packet up the stack */
 		skb->protocol = eth_type_trans(skb, ndev);
@@ -2280,6 +2588,16 @@ static int emac_ndo_open(struct net_device *ndev)
 		}
 	}
 
+	if (PRUETH_HAS_PTP(prueth) && emac->ptp_tx_irq > 0) {
+		ret = request_irq(emac->ptp_tx_irq,
+				  emac_tx_hardirq, flags,
+				  ndev->name, ndev);
+		if (ret) {
+			netdev_err(ndev, "unable to request PTP TX IRQ\n");
+			goto free_irq;
+		}
+	}
+
 	/* set h/w MAC as user might have re-configured */
 	ether_addr_copy(emac->mac_addr, ndev->dev_addr);
 
@@ -2338,10 +2656,35 @@ static int emac_ndo_open(struct net_device *ndev)
 				goto free_ptp_irq;
 		}
 
-		prueth_set_reg(prueth, PRUETH_MEM_IEP, 0,
-			       IEP_GLOBAL_CFG_REG_MASK,
-			       IEP_GLOBAL_CFG_REG_DEF_VAL);
+		if (PRUETH_HAS_PTP(prueth)) {
+			if (iep_register(prueth->iep))
+				dev_err(&ndev->dev, "error registering iep\n");
+		} else {
+			/* Currently PTP is used with PRP firmware and only
+			 * on AM5xxx devices. So we reach here for non PRP
+			 * firmware cases. Dual EMAC Firmware on AM3xxx devices
+			 * uses IEP counter to keep track of Tx FIFO fill level
+			 * since that HW capability is not available in this
+			 * device. AM4xxx re-uses AM3xxx firmware. So need to
+			 * have the IEP counter IEP_GLOBAL_CFG_REG initialized
+			 * to 0x551 as required by the firmware on AM3xxx/4xxx
+			 * devices. For other cases, IEP counter is not used
+			 * in firmware and doesn't matter if it is initialized
+			 * or not. So we alway initialize the register to
+			 * POR value and keep it enabled to satisfy the
+			 * firmware on AM3xxx/4xxx devices.
+			 *
+			 * TODO: Re-visit this firmware dependency when PTP
+			 * is extended to Dual EMAC firmware on AM3xxx/4xxx.
+			 */
+			prueth_set_reg(prueth, PRUETH_MEM_IEP, 0,
+				       IEP_GLOBAL_CFG_REG_MASK,
+				       IEP_GLOBAL_CFG_REG_DEF_VAL);
+		}
 	}
+
+	if (PRUETH_HAS_PTP(prueth))
+		prueth_init_ptp_tx_work(emac);
 
 	/* reset and start PRU firmware */
 	if (PRUETH_HAS_SWITCH(prueth))
@@ -2387,6 +2730,9 @@ clean_debugfs_hsr_prp:
 		prueth_hsr_prp_debugfs_term(prueth);
 free_ptp_irq:
 	mutex_unlock(&prueth->mlock);
+	if (PRUETH_HAS_PTP(prueth) && emac->ptp_tx_irq > 0)
+		free_irq(emac->ptp_tx_irq, ndev);
+free_irq:
 	if (!PRUETH_HAS_SWITCH(prueth))
 		free_irq(emac->tx_irq, ndev);
 free_rx_irq:
@@ -2404,6 +2750,12 @@ static int sw_emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 	/* disable and free rx irq */
 	free_irq(emac->rx_irq, emac->ndev);
 	disable_irq(emac->rx_irq);
+
+	if (PRUETH_HAS_PTP(prueth) && emac->ptp_tx_irq > 0) {
+		disable_irq(emac->ptp_tx_irq);
+		free_irq(emac->ptp_tx_irq, emac->ndev);
+		prueth_cancel_ptp_tx_work(emac);
+	}
 
 	/* another emac is still in use, don't stop the PRUs */
 	if (prueth->emac_configured)
@@ -2463,6 +2815,7 @@ static int emac_ndo_stop(struct net_device *ndev)
 {
 	struct prueth_emac *emac = netdev_priv(ndev);
 	struct prueth *prueth = emac->prueth;
+	int i;
 
 	/* inform the upper layers. */
 	netif_stop_queue(ndev);
@@ -2476,11 +2829,30 @@ static int emac_ndo_stop(struct net_device *ndev)
 
 	mutex_lock(&prueth->mlock);
 
+	/* clean up emac ptp related */
+	if (PRUETH_HAS_PTP(prueth)) {
+		emac_ptp_rx_enable(emac, 0);
+		emac_ptp_tx_enable(emac, 0);
+		pruptp_reset_tx_ts(emac);
+
+		for (i = 0; i <= PTP_PDLY_RSP_MSG_ID; i++) {
+			if (emac->tx_ev_msg[i]) {
+				dev_consume_skb_any(emac->tx_ev_msg[i]);
+				emac->tx_ev_msg[i] = NULL;
+			}
+		}
+	}
+
 	/* stop PRU firmware */
 	if (PRUETH_HAS_SWITCH(prueth))
 		sw_emac_pru_stop(emac, ndev);
 	else
 		emac_pru_stop(emac, ndev);
+
+	if (PRUETH_HAS_PTP(prueth) && !prueth->emac_configured)
+		iep_unregister(prueth->iep);
+	if (PRUETH_HAS_PTP(prueth))
+		prueth_clean_ptp_tx_work();
 
 	mutex_unlock(&prueth->mlock);
 
@@ -2789,6 +3161,88 @@ static void emac_ndo_set_rx_mode(struct net_device *ndev)
 	writel(reg, sram + s->eof_48k_buffer_bd + EMAC_PROMISCUOUS_MODE_OFFSET);
 }
 
+static int emac_hwtstamp_set(struct net_device *ndev, struct ifreq *ifr)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct hwtstamp_config cfg;
+
+	if (copy_from_user(&cfg, ifr->ifr_data, sizeof(cfg)))
+		return -EFAULT;
+
+	/* reserved for future extensions */
+	if (cfg.flags)
+		return -EINVAL;
+
+	if (cfg.tx_type != HWTSTAMP_TX_OFF && cfg.tx_type != HWTSTAMP_TX_ON)
+		return -ERANGE;
+
+	switch (cfg.rx_filter) {
+	case HWTSTAMP_FILTER_NONE:
+		emac_ptp_rx_enable(emac, 0);
+		break;
+	case HWTSTAMP_FILTER_ALL:
+	case HWTSTAMP_FILTER_PTP_V1_L4_EVENT:
+	case HWTSTAMP_FILTER_PTP_V1_L4_SYNC:
+	case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
+		return -ERANGE;
+	case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
+	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_L2_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ:
+	case HWTSTAMP_FILTER_PTP_V2_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
+		emac_ptp_rx_enable(emac, 1);
+		cfg.rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
+		break;
+	default:
+		return -ERANGE;
+	}
+
+	emac_ptp_tx_enable(emac, cfg.tx_type == HWTSTAMP_TX_ON);
+
+	return copy_to_user(ifr->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
+}
+
+static int emac_hwtstamp_get(struct net_device *ndev, struct ifreq *ifr)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct hwtstamp_config cfg;
+
+	cfg.flags = 0;
+	cfg.tx_type = emac_is_ptp_tx_enabled(emac) ?
+		      HWTSTAMP_TX_ON : HWTSTAMP_TX_OFF;
+	cfg.rx_filter = (emac_is_ptp_rx_enabled(emac) ?
+			 HWTSTAMP_FILTER_PTP_V2_EVENT : HWTSTAMP_FILTER_NONE);
+
+	return copy_to_user(ifr->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
+}
+
+static int emac_ndo_ioctl(struct net_device *ndev, struct ifreq *req, int cmd)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+
+	if (!netif_running(ndev))
+		return -EINVAL;
+
+	switch (cmd) {
+	case SIOCSHWTSTAMP:
+		if (!PRUETH_HAS_PTP(emac->prueth))
+			return -ENOTSUPP;
+
+		return emac_hwtstamp_set(ndev, req);
+	case SIOCGHWTSTAMP:
+		if (!PRUETH_HAS_PTP(emac->prueth))
+			return -ENOTSUPP;
+
+		return emac_hwtstamp_get(ndev, req);
+	}
+
+	return phy_mii_ioctl(emac->phydev, req, cmd);
+}
+
 static int emac_add_del_vid(struct prueth_emac *emac,
 			    bool add, __be16 proto, u16 vid)
 {
@@ -2870,6 +3324,7 @@ static const struct net_device_ops emac_netdev_ops = {
 	.ndo_set_rx_mode = emac_ndo_set_rx_mode,
 	.ndo_set_features = emac_ndo_set_features,
 	.ndo_fix_features = emac_ndo_fix_features,
+	.ndo_do_ioctl = emac_ndo_ioctl,
 	.ndo_vlan_rx_add_vid = emac_ndo_vlan_rx_add_vid,
 	.ndo_vlan_rx_kill_vid = emac_ndo_vlan_rx_kill_vid,
 
@@ -3112,12 +3567,75 @@ static void emac_get_ethtool_stats(struct net_device *ndev,
 	}
 }
 
+/* This is a temporary HACK.
+ * The ethtool set_dump API is re-used here to allow user application
+ * to pass in the PTP master clock MAC ID. The PRU PRP firmware requires
+ * the master clock mac ID to filter out PTP event messages received
+ * from unexpected master clock. This will be removed once a more
+ * satisfactory resolution is found.
+ */
+static int emac_set_dump(struct net_device *ndev, struct ethtool_dump *dump)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
+	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
+	u8 *p;
+
+	if (!PRUETH_HAS_PTP(prueth))
+		return -ENOTSUPP;
+
+	if (dump->version != 0xface)
+		return -EOPNOTSUPP;
+
+	p = (u8 *)&dump->flag;
+	memcpy_toio(sram + SYNC_MASTER_MAC_OFFSET, p, 3);
+	p = (u8 *)&dump->len;
+	memcpy_toio(sram + SYNC_MASTER_MAC_OFFSET + 3, p + 1, 3);
+	return 0;
+}
+
+static int emac_get_ts_info(struct net_device *ndev,
+			    struct ethtool_ts_info *info)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
+
+	if (!PRUETH_HAS_PTP(prueth)) {
+		info->so_timestamping =
+			SOF_TIMESTAMPING_TX_SOFTWARE |
+			SOF_TIMESTAMPING_RX_SOFTWARE |
+			SOF_TIMESTAMPING_SOFTWARE;
+		info->phc_index = -1;
+		info->tx_types = 0;
+		info->rx_filters = 0;
+		return 0;
+	}
+
+	info->so_timestamping =
+		SOF_TIMESTAMPING_TX_HARDWARE |
+		SOF_TIMESTAMPING_TX_SOFTWARE |
+		SOF_TIMESTAMPING_RX_HARDWARE |
+		SOF_TIMESTAMPING_RX_SOFTWARE |
+		SOF_TIMESTAMPING_SOFTWARE |
+		SOF_TIMESTAMPING_RAW_HARDWARE;
+	info->phc_index = prueth->iep->phc_index;
+	info->tx_types =
+		(1 << HWTSTAMP_TX_OFF) |
+		(1 << HWTSTAMP_TX_ON);
+	info->rx_filters =
+		(1 << HWTSTAMP_FILTER_NONE) |
+		(1 << HWTSTAMP_FILTER_PTP_V2_EVENT);
+	return 0;
+}
+
 /* Ethtool support for EMAC adapter */
 static const struct ethtool_ops emac_ethtool_ops = {
 	.get_drvinfo = emac_get_drvinfo,
 	.get_link_ksettings = emac_get_link_ksettings,
 	.set_link_ksettings = emac_set_link_ksettings,
+	.set_dump = emac_set_dump,
 	.get_link = ethtool_op_get_link,
+	.get_ts_info = emac_get_ts_info,
 	.get_sset_count = emac_get_sset_count,
 	.get_strings = emac_get_strings,
 	.get_ethtool_stats = emac_get_ethtool_stats,
@@ -3131,6 +3649,7 @@ static int prueth_netdev_init(struct prueth *prueth,
 	struct net_device *ndev;
 	struct prueth_emac *emac;
 	const u8 *mac_addr;
+	char *tx_int;
 	int ret;
 
 	port = prueth_node_port(eth_node);
@@ -3153,6 +3672,11 @@ static int prueth_netdev_init(struct prueth *prueth,
 	emac->ndev = ndev;
 	emac->port_id = port;
 
+	if (PRUETH_HAS_PTP(prueth))
+		tx_int = "ptp_tx";
+	else
+		tx_int = "tx";
+
 	emac->rx_irq = of_irq_get_byname(eth_node, "rx");
 	if (emac->rx_irq < 0) {
 		ret = emac->rx_irq;
@@ -3160,17 +3684,25 @@ static int prueth_netdev_init(struct prueth *prueth,
 			dev_err(prueth->dev, "could not get emac rx irq\n");
 		goto free;
 	}
-	emac->tx_irq = of_irq_get_byname(eth_node, "tx");
+	emac->tx_irq = of_irq_get_byname(eth_node, tx_int);
 	if (emac->tx_irq < 0) {
 		ret = emac->tx_irq;
 		if (ret != -EPROBE_DEFER)
 			dev_err(prueth->dev,
-				"could not get emac tx irq\n");
+				"could not get emac %s irq\n", tx_int);
 		goto free;
+	}
+
+	emac->ptp_tx_irq = of_irq_get_byname(eth_node, "ptp_tx");
+	if (emac->ptp_tx_irq < 0) {
+		ret = emac->ptp_tx_irq;
+		if (ret != -EPROBE_DEFER)
+			dev_info(prueth->dev, "could not get ptp tx irq\n");
 	}
 
 	emac->msg_enable = netif_msg_init(debug_level, PRUETH_EMAC_DEBUG);
 	spin_lock_init(&emac->lock);
+	spin_lock_init(&emac->ev_msg_lock);
 	spin_lock_init(&emac->addr_lock);
 	/* get mac address from DT and set private and netdev addr */
 	mac_addr = of_get_mac_address(eth_node);
@@ -3487,6 +4019,15 @@ static int prueth_probe(struct platform_device *pdev)
 	}
 
 	prueth_init_mem(prueth);
+
+	prueth->iep = iep_create(prueth->dev,
+				 prueth->mem[PRUETH_MEM_SHARED_RAM].va,
+				 prueth->mem[PRUETH_MEM_IEP].va,
+				 prueth->pruss_id);
+	if (IS_ERR(prueth->iep)) {
+		ret = PTR_ERR(prueth->iep);
+		goto netdev_exit;
+	}
 
 	/* register the network devices */
 	if (eth0_node) {
