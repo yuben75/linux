@@ -130,7 +130,7 @@ static struct sk_buff *create_stripped_skb_hsr(struct sk_buff *skb_in,
 	skb = __pskb_copy(skb_in,
 			  skb_headroom(skb_in) - HSR_PRP_HLEN, GFP_ATOMIC);
 	skb_push(skb_in, HSR_PRP_HLEN);
-	if (skb == NULL)
+	if (!skb)
 		return NULL;
 
 	skb_reset_mac_header(skb);
