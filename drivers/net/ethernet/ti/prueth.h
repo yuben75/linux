@@ -316,8 +316,8 @@ struct prueth_hsr_prp_node {
 				 NETIF_MSG_HW | \
 				 NETIF_MSG_WOL)
 
-#define EMAC_MAX_PKTLEN		(ETH_HLEN + VLAN_HLEN + ETH_DATA_LEN)
-#define EMAC_MIN_PKTLEN		(60)
+#define PRUETH_MAX_PKTLEN_EMAC	(VLAN_ETH_FRAME_LEN + ETH_FCS_LEN)
+#define EMAC_MIN_PKTLEN		(64)
 
 enum pruss_device {
 	PRUSS_AM57XX = 0,
@@ -341,8 +341,9 @@ enum pruss_ethtype {
 	PRUSS_ETHTYPE_MAX,
 };
 
-#define HSR_TAG_LEN		(10)
-#define EMAC_MAX_PKTLEN_HSR	(EMAC_MAX_PKTLEN + HSR_TAG_LEN)
+#define TAG_OR_RCT_LEN		6
+/* for HSR and PRP */
+#define PRUETH_MAX_PKTLEN_RED	(PRUETH_MAX_PKTLEN_EMAC + TAG_OR_RCT_LEN)
 #define PRUETH_IS_EMAC(p)	((p)->eth_type == PRUSS_ETHTYPE_EMAC)
 #define PRUETH_IS_HSR(p)	((p)->eth_type == PRUSS_ETHTYPE_HSR)
 #define PRUETH_IS_PRP(p)	((p)->eth_type == PRUSS_ETHTYPE_PRP)
