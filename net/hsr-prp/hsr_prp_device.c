@@ -123,11 +123,20 @@ int hsr_prp_get_max_mtu(struct hsr_prp_priv *priv)
 	hsr_prp_for_each_port(priv, port)
 		if (port->type != HSR_PRP_PT_MASTER)
 			mtu_max = min(port->dev->mtu, mtu_max);
+
 	rcu_read_unlock();
 
 	if (mtu_max < HSR_PRP_HLEN)
 		return 0;
-	return mtu_max - HSR_PRP_HLEN;
+
+	/* For offloaded keep the mtu same as ETH_DATA_LEN as
+	 * h/w is expected to extend the frame to accommodate RCT
+	 * or TAG
+	 */
+	if (!priv->rx_offloaded)
+		return mtu_max - HSR_PRP_HLEN;
+
+	return mtu_max;
 }
 
 static int hsr_prp_dev_change_mtu(struct net_device *dev, int new_mtu)
