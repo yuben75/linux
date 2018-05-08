@@ -140,4 +140,21 @@ config TI_PRUETH
 	---help---
 	  Support EMAC over PRUSS.
 
+config TI_PTP_BC
+       tristate "TI Boundary Clock Support"
+       depends on TI_CPSW || TI_PRUETH
+       select PTP_1588_CLOCK
+       ---help---
+         This driver supports PTP boundary clock that includes more
+         than one physical clock, such as CPTS and ICSS-IEP, as its
+         constituent clocks with pps internal sync capability. It
+         makes sure that no more than one constituent clock enables
+         pps for internal sync purpose at any given instant of time.
+
+config TI_1PPS_DM_TIMER
+	bool "TI 1PPS dm timer implementation"
+	depends on OMAP_DM_TIMER
+	---help---
+	  Enables 1pps pulse generation using dm timer
+
 endif # NET_VENDOR_TI

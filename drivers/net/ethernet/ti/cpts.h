@@ -28,10 +28,18 @@
 #include <linux/device.h>
 #include <linux/list.h>
 #include <linux/of.h>
+#include <linux/of_gpio.h>
+#ifdef CONFIG_TI_1PPS_DM_TIMER
+#include <linux/gpio.h>
+#endif
 #include <linux/ptp_clock_kernel.h>
 #include <linux/skbuff.h>
 #include <linux/ptp_classify.h>
 #include <linux/timecounter.h>
+#ifdef CONFIG_TI_1PPS_DM_TIMER
+#include <linux/kthread.h>
+#include <clocksource/timer-ti-dm.h>
+#endif
 
 struct cpsw_cpts {
 	u32 idver;                /* Identification and version */
@@ -106,6 +114,10 @@ enum {
 #define CPTS_EVENT_RX_TX_TIMEOUT 20 /* ms */
 #define CPTS_EVENT_HWSTAMP_TIMEOUT 200 /* ms */
 
+#ifdef CONFIG_TI_1PPS_DM_TIMER
+#define CPTS_MAX_LATCH	3
+#endif
+
 struct cpts_event {
 	struct list_head list;
 	unsigned long tmo;
@@ -138,6 +150,39 @@ struct cpts {
 	u32 ext_ts_inputs;
 	u32 hw_ts_enable;
 	u32 caps;
+
+#ifdef CONFIG_TI_1PPS_DM_TIMER
+	bool use_1pps;
+	bool pps_latch_receive;
+	int pps_enable;
+	int pps_state;
+	int pps_latch_state;
+	int ref_enable;
+	struct omap_dm_timer *odt;/* timer for 1PPS generator */
+	struct omap_dm_timer *odt2;/* timer for 1PPS latch */
+	u32 count_prev;
+	u64 hw_timestamp;
+	u32 pps_latch_offset;
+	int pps_offset;
+
+	struct pinctrl *pins;
+	struct pinctrl_state *pin_state_pwm_off;
+	struct pinctrl_state *pin_state_pwm_on;
+	struct pinctrl_state *pin_state_ref_off;
+	struct pinctrl_state *pin_state_ref_on;
+	struct pinctrl_state *pin_state_latch_off;
+	struct pinctrl_state *pin_state_latch_on;
+
+	int pps_enable_gpio;
+	int ref_enable_gpio;
+
+	int pps_tmr_irqn;
+	int pps_latch_irqn;
+	int bc_clkid;
+
+	struct kthread_worker *pps_kworker;
+	struct kthread_delayed_work pps_work;
+#endif
 };
 
 int cpts_rx_timestamp(struct cpts *cpts, struct sk_buff *skb);
