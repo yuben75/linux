@@ -39,18 +39,23 @@ struct pruss_match_private_data {
 /**
  * pruss_get() - get the pruss for a given PRU remoteproc
  * @rproc: remoteproc handle of a PRU instance
+ * @pruss_id: integer pointer to fill in the pruss instance id
  *
  * Finds the parent pruss device for a PRU given the @rproc handle of the
- * PRU remote processor. This function increments the pruss device's refcount,
- * so always use pruss_put() to decrement it back once pruss isn't needed
- * anymore.
+ * PRU remote processor. The function will also returns the PRUSS instance id
+ * to requestors if @pruss_id is provided. This can be used by PRU client
+ * drivers to distinguish between multiple PRUSS instances, and build some
+ * customization around a specific PRUSS instance.
+
+ * This function increments the pruss device's refcount, so always use
+ * pruss_put() to decrement it back once pruss isn't needed anymore.
  *
  * Returns the pruss handle on success, and an ERR_PTR on failure using one
  * of the following error values
  *    -EINVAL if invalid parameter
  *    -ENODEV if PRU device or PRUSS device is not found
  */
-struct pruss *pruss_get(struct rproc *rproc)
+struct pruss *pruss_get(struct rproc *rproc, int *pruss_id)
 {
 	struct pruss *pruss;
 	struct device *dev;
@@ -69,8 +74,11 @@ struct pruss *pruss_get(struct rproc *rproc)
 
 	ppdev = to_platform_device(dev->parent->parent);
 	pruss = platform_get_drvdata(ppdev);
-	if (pruss)
+	if (pruss) {
 		get_device(pruss->dev);
+		if (pruss_id)
+			*pruss_id = pruss->id;
+	}
 
 	return pruss ? pruss : ERR_PTR(-ENODEV);
 }
@@ -113,8 +121,7 @@ int pruss_regmap_read(struct pruss *pruss, enum pruss_syscon mod,
 	    mod >= PRUSS_SYSCON_MAX)
 		return -EINVAL;
 
-	map = (mod == PRUSS_SYSCON_CFG) ? pruss->cfg :
-	       ((mod == PRUSS_SYSCON_IEP ? pruss->iep : pruss->mii_rt));
+	map = (mod == PRUSS_SYSCON_CFG) ? pruss->cfg : pruss->mii_rt;
 
 	return regmap_read(map, reg, val);
 }
@@ -142,8 +149,7 @@ int pruss_regmap_update(struct pruss *pruss, enum pruss_syscon mod,
 	    mod >= PRUSS_SYSCON_MAX)
 		return -EINVAL;
 
-	map = (mod == PRUSS_SYSCON_CFG) ? pruss->cfg :
-	       ((mod == PRUSS_SYSCON_IEP ? pruss->iep : pruss->mii_rt));
+	map = (mod == PRUSS_SYSCON_CFG) ? pruss->cfg : pruss->mii_rt;
 
 	return regmap_update_bits(map, reg, mask, val);
 }
@@ -228,6 +234,27 @@ int pruss_release_mem_region(struct pruss *pruss,
 }
 EXPORT_SYMBOL_GPL(pruss_release_mem_region);
 
+static int pruss_set_id(struct pruss *pruss)
+{
+	int i;
+	int ret = -EINVAL;
+	static const phys_addr_t addrs[] = { 0x4a300000,
+					     0x54400000, 0x54440000,
+					     0x4b200000, 0x4b280000,
+					     0x20a80000, 0x20ac0000, };
+	static const int ids[] = { 0, 1, 0, 1, 2, 0, 1 };
+
+	for (i = 0; i < ARRAY_SIZE(addrs); i++) {
+		if (pruss->mem_regions[0].pa == addrs[i]) {
+			pruss->id = ids[i];
+			ret = 0;
+			break;
+		}
+	}
+
+	return ret;
+}
+
 static const
 struct pruss_private_data *pruss_get_private_data(struct platform_device *pdev)
 {
@@ -254,7 +281,7 @@ static int pruss_probe(struct platform_device *pdev)
 	struct resource res;
 	int ret, i, index;
 	const struct pruss_private_data *data;
-	const char *mem_names[PRUSS_MEM_MAX] = { "dram0", "dram1", "shrdram2" };
+	const char *mem_names[PRUSS_MEM_MAX] = { "dram0", "dram1", "shrdram2", "iep" };
 
 	if (!node) {
 		dev_err(dev, "Non-DT platform device not supported\n");
@@ -287,15 +314,6 @@ static int pruss_probe(struct platform_device *pdev)
 	pruss->cfg = syscon_node_to_regmap(np);
 	of_node_put(np);
 	if (IS_ERR(pruss->cfg))
-		return -ENODEV;
-
-	np = of_get_child_by_name(node, "iep");
-	if (!np)
-		return -ENODEV;
-
-	pruss->iep = syscon_node_to_regmap(np);
-	of_node_put(np);
-	if (IS_ERR(pruss->iep))
 		return -ENODEV;
 
 	np = of_get_child_by_name(node, "mii_rt");
@@ -343,6 +361,10 @@ static int pruss_probe(struct platform_device *pdev)
 			pruss->mem_regions[i].size, pruss->mem_regions[i].va);
 	}
 	of_node_put(np);
+
+	ret = pruss_set_id(pruss);
+	if (ret < 0)
+		return ret;
 
 	platform_set_drvdata(pdev, pruss);
 
