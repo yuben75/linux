@@ -9,54 +9,82 @@
  *	2011-2014 Arvid Brodin, arvid.brodin@alten.se
  */
 
-#include "hsr_slave.h"
+#include "hsr_prp_slave.h"
 #include <linux/etherdevice.h>
 #include <linux/if_arp.h>
 #include <linux/if_vlan.h>
-#include "hsr_main.h"
-#include "hsr_device.h"
-#include "hsr_forward.h"
-#include "hsr_framereg.h"
-
+#include "hsr_prp_main.h"
+#include "hsr_prp_device.h"
+#include "hsr_prp_forward.h"
+#include "hsr_prp_framereg.h"
 
 static rx_handler_result_t hsr_handle_frame(struct sk_buff **pskb)
 {
 	struct sk_buff *skb = *pskb;
-	struct hsr_port *port;
+	struct hsr_prp_port *port;
+	struct hsr_prp_priv *priv;
 	u16 protocol;
+
+	rcu_read_lock(); /* hsr->node_db, hsr->ports */
+	port = hsr_prp_port_get_rcu(skb->dev);
+	priv = port->priv;
 
 	if (!skb_mac_header_was_set(skb)) {
 		WARN_ONCE(1, "%s: skb invalid", __func__);
-		return RX_HANDLER_PASS;
+		goto finish_pass;
 	}
 
-	rcu_read_lock(); /* hsr->node_db, hsr->ports */
-	port = hsr_port_get_rcu(skb->dev);
-
-	if (hsr_addr_is_self(port->hsr, eth_hdr(skb)->h_source)) {
+	if (hsr_prp_addr_is_self(priv, eth_hdr(skb)->h_source)) {
 		/* Directly kill frames sent by ourselves */
+		INC_CNT_OWN_RX(port->type, priv);
 		kfree_skb(skb);
 		goto finish_consume;
 	}
 
+	/* For HSR, non tagged frames are unexpected, but for PRP
+	 * there could be non tagged frames as well.
+	 */
 	protocol = eth_hdr(skb)->h_proto;
-	if (protocol != htons(ETH_P_PRP) && protocol != htons(ETH_P_HSR))
+
+	if (protocol != htons(ETH_P_PRP) &&
+	    protocol != htons(ETH_P_HSR) &&
+	    port->priv->prot_ver <= HSR_V1 &&
+	    !priv->rx_offloaded)
 		goto finish_pass;
 
-	skb_push(skb, ETH_HLEN);
+	/* Frame is a HSR or PRP frame or frame form a SAN. For
+	 * PRP, only supervisor frame will have a PRP protocol.
+	 */
+	if (protocol == htons(ETH_P_HSR) || protocol == htons(ETH_P_PRP))
+		skb_push(skb, ETH_HLEN);
 
-	hsr_forward_skb(skb, port);
+	/* HACK: Not sure why we have to do this as some frames
+	 * don't have the skb->data pointing to mac header
+	 */
+	if (skb_mac_header(skb) != skb->data) {
+		skb_push(skb, ETH_HLEN);
+
+		/* do one more check and bail out */
+		if (skb_mac_header(skb) != skb->data) {
+			INC_CNT_RX_ERROR(port->type, priv);
+			goto finish_consume;
+		}
+	}
+
+	INC_CNT_RX(port->type, priv);
+	hsr_prp_forward_skb(skb, port);
 
 finish_consume:
 	rcu_read_unlock(); /* hsr->node_db, hsr->ports */
 	return RX_HANDLER_CONSUMED;
 
 finish_pass:
+	INC_CNT_RX_ERROR(port->type, priv);
 	rcu_read_unlock(); /* hsr->node_db, hsr->ports */
 	return RX_HANDLER_PASS;
 }
 
-bool hsr_port_exists(const struct net_device *dev)
+bool hsr_prp_port_exists(const struct net_device *dev)
 {
 	return rcu_access_pointer(dev->rx_handler) == hsr_handle_frame;
 }
@@ -67,23 +95,19 @@ static int hsr_check_dev_ok(struct net_device *dev)
 	/* Don't allow HSR on non-ethernet like devices */
 	if ((dev->flags & IFF_LOOPBACK) || (dev->type != ARPHRD_ETHER) ||
 	    (dev->addr_len != ETH_ALEN)) {
-		netdev_info(dev, "Cannot use loopback or non-ethernet device as HSR slave.\n");
+		netdev_info(dev,
+			    "Cannot use loopback or non-ethernet device as HSR slave.\n");
 		return -EINVAL;
 	}
 
 	/* Don't allow enslaving hsr devices */
-	if (is_hsr_master(dev)) {
+	if (is_hsr_prp_master(dev)) {
 		netdev_info(dev, "Cannot create trees of HSR devices.\n");
 		return -EINVAL;
 	}
 
-	if (hsr_port_exists(dev)) {
+	if (hsr_prp_port_exists(dev)) {
 		netdev_info(dev, "This device is already a HSR slave.\n");
-		return -EINVAL;
-	}
-
-	if (is_vlan_dev(dev)) {
-		netdev_info(dev, "HSR on top of VLAN is not yet supported in this driver.\n");
 		return -EINVAL;
 	}
 
@@ -99,9 +123,8 @@ static int hsr_check_dev_ok(struct net_device *dev)
 	return 0;
 }
 
-
 /* Setup device to be added to the HSR bridge. */
-static int hsr_portdev_setup(struct net_device *dev, struct hsr_port *port)
+static int hsr_portdev_setup(struct net_device *dev, struct hsr_prp_port *port)
 {
 	int res;
 
@@ -130,42 +153,42 @@ fail_promiscuity:
 	return res;
 }
 
-int hsr_add_port(struct hsr_priv *hsr, struct net_device *dev,
-		 enum hsr_port_type type)
+int hsr_prp_add_port(struct hsr_prp_priv *priv, struct net_device *dev,
+		     enum hsr_prp_port_type type)
 {
-	struct hsr_port *port, *master;
+	struct hsr_prp_port *port, *master;
 	int res;
 
-	if (type != HSR_PT_MASTER) {
+	if (type != HSR_PRP_PT_MASTER) {
 		res = hsr_check_dev_ok(dev);
 		if (res)
 			return res;
 	}
 
-	port = hsr_port_get_hsr(hsr, type);
-	if (port != NULL)
+	port = hsr_prp_get_port(priv, type);
+	if (port)
 		return -EBUSY;	/* This port already exists */
 
 	port = kzalloc(sizeof(*port), GFP_KERNEL);
-	if (port == NULL)
+	if (!port)
 		return -ENOMEM;
 
-	if (type != HSR_PT_MASTER) {
+	if (type != HSR_PRP_PT_MASTER) {
 		res = hsr_portdev_setup(dev, port);
 		if (res)
 			goto fail_dev_setup;
 	}
 
-	port->hsr = hsr;
+	port->priv = priv;
 	port->dev = dev;
 	port->type = type;
 
-	list_add_tail_rcu(&port->port_list, &hsr->ports);
+	list_add_tail_rcu(&port->port_list, &priv->ports);
 	synchronize_rcu();
 
-	master = hsr_port_get_hsr(hsr, HSR_PT_MASTER);
+	master = hsr_prp_get_port(priv, HSR_PRP_PT_MASTER);
 	netdev_update_features(master->dev);
-	dev_set_mtu(master->dev, hsr_get_max_mtu(hsr));
+	dev_set_mtu(master->dev, hsr_prp_get_max_mtu(priv));
 
 	return 0;
 
@@ -174,26 +197,26 @@ fail_dev_setup:
 	return res;
 }
 
-void hsr_del_port(struct hsr_port *port)
+void hsr_prp_del_port(struct hsr_prp_port *port)
 {
-	struct hsr_priv *hsr;
-	struct hsr_port *master;
+	struct hsr_prp_priv *priv;
+	struct hsr_prp_port *master;
 
-	hsr = port->hsr;
-	master = hsr_port_get_hsr(hsr, HSR_PT_MASTER);
+	priv = port->priv;
+	master = hsr_prp_get_port(priv, HSR_PRP_PT_MASTER);
 	list_del_rcu(&port->port_list);
 
 	if (port != master) {
-		if (master != NULL) {
+		if (master) {
 			netdev_update_features(master->dev);
-			dev_set_mtu(master->dev, hsr_get_max_mtu(hsr));
+			dev_set_mtu(master->dev, hsr_prp_get_max_mtu(priv));
 		}
 		netdev_rx_handler_unregister(port->dev);
 		dev_set_promiscuity(port->dev, -1);
 	}
 
 	/* FIXME?
-	 * netdev_upper_dev_unlink(port->dev, port->hsr->dev);
+	 * netdev_upper_dev_unlink(port->dev, port->priv->dev);
 	 */
 
 	synchronize_rcu();

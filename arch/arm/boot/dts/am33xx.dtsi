@@ -955,19 +955,15 @@
 				pruss_mem: memories@0 {
 					reg = <0x0 0x2000>,
 					      <0x2000 0x2000>,
-					      <0x10000 0x3000>;
+					      <0x10000 0x3000>,
+					      <0x2e000 0x31c>;
 					reg-names = "dram0", "dram1",
-						    "shrdram2";
+						    "shrdram2", "iep";
 				};
 
 				pruss_cfg: cfg@26000 {
 					compatible = "syscon";
 					reg = <0x26000 0x2000>;
-				};
-
-				pruss_iep: iep@2e000 {
-					compatible = "syscon";
-					reg = <0x2e000 0x31c>;
 				};
 
 				pruss_mii_rt: mii_rt@32000 {
