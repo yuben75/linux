@@ -72,6 +72,8 @@ enum {
 	NETIF_F_HW_VLAN_STAG_RX_BIT,	/* Receive VLAN STAG HW acceleration */
 	NETIF_F_HW_VLAN_STAG_FILTER_BIT,/* Receive filtering on VLAN STAGs */
 	NETIF_F_HW_L2FW_DOFFLOAD_BIT,	/* Allow L2 Forwarding in Hardware */
+	NETIF_F_HW_HSR_RX_OFFLOAD_BIT,	/* HSR Rx handling in HW/firmware */
+	NETIF_F_HW_PRP_RX_OFFLOAD_BIT,	/* PRP Rx handling in HW/firmware */
 
 	NETIF_F_HW_TC_BIT,		/* Offload TC infrastructure */
 	NETIF_F_HW_ESP_BIT,		/* Hardware ESP transformation offload */
@@ -142,6 +144,8 @@ enum {
 #define NETIF_F_HW_ESP		__NETIF_F(HW_ESP)
 #define NETIF_F_HW_ESP_TX_CSUM	__NETIF_F(HW_ESP_TX_CSUM)
 #define	NETIF_F_RX_UDP_TUNNEL_PORT  __NETIF_F(RX_UDP_TUNNEL_PORT)
+#define NETIF_F_HW_HSR_RX_OFFLOAD __NETIF_F(HW_HSR_RX_OFFLOAD)
+#define NETIF_F_HW_PRP_RX_OFFLOAD __NETIF_F(HW_PRP_RX_OFFLOAD)
 
 #define for_each_netdev_feature(mask_addr, bit)	\
 	for_each_set_bit(bit, (unsigned long *)mask_addr, NETDEV_FEATURE_COUNT)

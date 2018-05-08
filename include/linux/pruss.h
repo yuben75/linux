@@ -103,7 +103,6 @@ enum pruss_gpi_mode {
  */
 enum pruss_syscon {
 	PRUSS_SYSCON_CFG = 0,
-	PRUSS_SYSCON_IEP,
 	PRUSS_SYSCON_MII_RT,
 	PRUSS_SYSCON_MAX,
 };
@@ -138,6 +137,7 @@ enum pruss_mem {
 	PRUSS_MEM_DRAM0 = 0,
 	PRUSS_MEM_DRAM1,
 	PRUSS_MEM_SHRD_RAM2,
+	PRUSS_MEM_IEP,
 	PRUSS_MEM_MAX,
 };
 
@@ -157,7 +157,7 @@ struct pruss;
 
 #if IS_ENABLED(CONFIG_PRUSS_REMOTEPROC)
 
-struct pruss *pruss_get(struct rproc *rproc);
+struct pruss *pruss_get(struct rproc *rproc, int *pruss_id);
 void pruss_put(struct pruss *pruss);
 int pruss_regmap_read(struct pruss *pruss, enum pruss_syscon mod,
 		      unsigned int reg, unsigned int *val);
@@ -177,7 +177,7 @@ int pru_rproc_set_ctable(struct rproc *rproc, enum pru_ctable_idx c, u32 addr);
 
 #else
 
-static inline struct pruss *pruss_get(struct rproc *rproc)
+static inline struct pruss *pruss_get(struct rproc *rproc, int *pruss_id)
 {
 	return ERR_PTR(-ENOTSUPP);
 }

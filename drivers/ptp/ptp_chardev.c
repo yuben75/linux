@@ -184,6 +184,15 @@ long ptp_ioctl(struct posix_clock *pc, unsigned int cmd, unsigned long arg)
 		err = ops->enable(ops, &req, enable);
 		break;
 
+	case PTP_PPS_OFFSET:
+		if (!capable(CAP_SYS_TIME))
+			return -EPERM;
+		req.type = PTP_CLK_REQ_PPS_OFFSET;
+		/* record pps offset */
+		enable = (int) arg;
+		err = ops->enable(ops, &req, enable);
+		break;
+
 	case PTP_SYS_OFFSET_PRECISE:
 		if (!ptp->info->getcrosststamp) {
 			err = -EOPNOTSUPP;
