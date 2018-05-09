@@ -571,8 +571,16 @@
 	};
 };
 
+&gpu {
+	status = "ok";
+};
+
 &dss {
 	status = "ok";
+};
+
+&bb2d {
+	status = "okay";
 };
 
 &hdmi {
