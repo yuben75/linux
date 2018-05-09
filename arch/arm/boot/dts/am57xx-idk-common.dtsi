@@ -615,6 +615,10 @@
 	};
 };
 
+&gpu {
+	status = "ok";
+};
+
 &hdmi {
 	status = "okay";
 	/*
@@ -650,6 +654,10 @@
 			};
 		};
 	};
+};
+
+&bb2d {
+	status = "okay";
 };
 
 &pruss_soc_bus1 {

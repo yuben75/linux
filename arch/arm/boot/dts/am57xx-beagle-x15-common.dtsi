@@ -586,10 +586,18 @@
        };
 };
 
+&gpu {
+	status = "ok";
+};
+
 &dss {
 	status = "ok";
 
 	vdda_video-supply = <&ldoln_reg>;
+};
+
+&bb2d {
+	status = "okay";
 };
 
 &hdmi {
