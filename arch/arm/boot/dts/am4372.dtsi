@@ -1069,9 +1069,6 @@
 					reg = <0x66000 0x2000>;
 				};
 
-					reg = <0x6e000 0x31c>;
-				};
-
 				pruss0_mii_rt: mii_rt@72000 {
 					compatible = "syscon";
 					reg = <0x72000 0x58>;
