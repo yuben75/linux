@@ -665,28 +665,53 @@ static void prueth_mii_init(struct prueth *prueth)
 	prueth_mii_set(TX, 1, CLK_DELAY_MASK,
 		       TX_CLK_DELAY << PRUSS_MII_RT_TXCFG_TX_CLK_DELAY_SHIFT);
 
+	/* Min frame length should be set to 64 to allow receive of standard
+	 * Ethernet frames such as PTP, LLDP that will not have the tag/rct.
+	 * Actual size written to register is size - 1 per TRM. This also
+	 * includes CRC/FCS.
+	 */
+	pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
+			    PRUSS_MII_RT_RX_FRMS0,
+			    PRUSS_MII_RT_RX_FRMS_MIN_FRM_MASK,
+			    (EMAC_MIN_PKTLEN - 1) <<
+			    PRUSS_MII_RT_RX_FRMS_MIN_FRM_SHIFT);
+
+	pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
+			    PRUSS_MII_RT_RX_FRMS1,
+			    PRUSS_MII_RT_RX_FRMS_MIN_FRM_MASK,
+			    (EMAC_MIN_PKTLEN - 1) <<
+			    PRUSS_MII_RT_RX_FRMS_MIN_FRM_SHIFT);
+
+	/* For EMAC, set Max frame size to 1522 i.e size with VLAN and for
+	 * HSR/PRP set it to 1528 i.e size with tag or rct. Actual size
+	 * written to register is size - 1 as per TRM. Since driver
+	 * support run time change of protocol, driver must overwrite
+	 * the values for EMAC case where the max size is 1522.
+	 */
 	if (PRUETH_HAS_RED(prueth)) {
 		pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
 				    PRUSS_MII_RT_RX_FRMS0,
 				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_MASK,
-				    EMAC_MAX_PKTLEN_HSR <<
+				    (PRUETH_MAX_PKTLEN_RED - 1) <<
 				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_SHIFT);
 
 		pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
+				    PRUSS_MII_RT_RX_FRMS1,
+				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_MASK,
+				    (PRUETH_MAX_PKTLEN_RED - 1) <<
+				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_SHIFT);
+	} else {
+		pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
 				    PRUSS_MII_RT_RX_FRMS0,
-				    PRUSS_MII_RT_RX_FRMS_MIN_FRM_MASK,
-				    EMAC_MIN_PKTLEN <<
-				    PRUSS_MII_RT_RX_FRMS_MIN_FRM_SHIFT);
+				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_MASK,
+				    (PRUETH_MAX_PKTLEN_EMAC - 1) <<
+				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_SHIFT);
+
 		pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
 				    PRUSS_MII_RT_RX_FRMS1,
 				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_MASK,
-				    EMAC_MAX_PKTLEN_HSR <<
+				    (PRUETH_MAX_PKTLEN_EMAC - 1) <<
 				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_SHIFT);
-		pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
-				    PRUSS_MII_RT_RX_FRMS1,
-				    PRUSS_MII_RT_RX_FRMS_MIN_FRM_MASK,
-				    EMAC_MIN_PKTLEN <<
-				    PRUSS_MII_RT_RX_FRMS_MIN_FRM_SHIFT);
 	}
 }
 
@@ -1383,7 +1408,8 @@ static int prueth_tx_enqueue(struct prueth_emac *emac, struct sk_buff *skb,
 		dram = prueth->mem[PRUETH_MEM_DRAM1].va;
 	}
 
-	ret = skb_padto(skb, EMAC_MIN_PKTLEN);
+	/* For padding don't include CRC. So use ETH_ZLEN */
+	ret = skb_padto(skb, ETH_ZLEN);
 	if (ret) {
 		if (netif_msg_tx_err(emac) && net_ratelimit())
 			netdev_err(ndev, "packet pad failed");
@@ -1393,8 +1419,8 @@ static int prueth_tx_enqueue(struct prueth_emac *emac, struct sk_buff *skb,
 
 	/* pad packet if needed */
 	pktlen = skb->len;
-	if (pktlen < EMAC_MIN_PKTLEN)
-		pktlen = EMAC_MIN_PKTLEN;
+	if (pktlen < ETH_ZLEN)
+		pktlen = ETH_ZLEN;
 
 	/* Get the tx queue */
 	queue_desc = emac->tx_queue_descs + queue_id;
@@ -1748,13 +1774,15 @@ static irqreturn_t emac_rx_thread(int irq, void *dev_id)
 	struct prueth_emac *other_emac;
 	const unsigned int *prio_q_ids;
 	unsigned int q_cnt;
-	unsigned int emac_max_pktlen = EMAC_MAX_PKTLEN;
-	bool rx_err = false;
+	unsigned int emac_max_pktlen = PRUETH_MAX_PKTLEN_EMAC;
 
 	prueth = emac->prueth;
 
 	prio_q_ids = emac_port_rx_priority_queue_ids[emac->port_id];
 	q_cnt = NUM_RX_QUEUES;
+
+	if (PRUETH_HAS_RED(prueth))
+		emac_max_pktlen = PRUETH_MAX_PKTLEN_RED;
 
 	/* search host queues for packets */
 	for (j = 0; j < q_cnt; j++) {
@@ -1789,9 +1817,6 @@ static irqreturn_t emac_rx_thread(int irq, void *dev_id)
 			rd_buf_desc = readl(shared_ram + bd_rd_ptr);
 			parse_packet_info(prueth, rd_buf_desc, &pkt_info);
 
-			if (PRUETH_HAS_HSR(prueth))
-				emac_max_pktlen = EMAC_MAX_PKTLEN_HSR;
-
 			if (pkt_info.length <= 0) {
 				/* a packet length of zero will cause us to
 				 * never move the read pointer ahead, locking
@@ -1802,7 +1827,6 @@ static irqreturn_t emac_rx_thread(int irq, void *dev_id)
 				 */
 				update_rd_ptr = bd_wr_ptr;
 				ndevstats->rx_length_errors++;
-				rx_err = true;
 			} else if (pkt_info.length > emac_max_pktlen) {
 				/* if the packet is too large we skip it but we
 				 * still need to move the read pointer ahead
@@ -1812,7 +1836,6 @@ static irqreturn_t emac_rx_thread(int irq, void *dev_id)
 				 */
 				update_rd_ptr = bd_wr_ptr;
 				ndevstats->rx_length_errors++;
-				rx_err = true;
 			} else {
 				update_rd_ptr = bd_rd_ptr;
 				ret = emac_rx_packet(emac, &update_rd_ptr,
