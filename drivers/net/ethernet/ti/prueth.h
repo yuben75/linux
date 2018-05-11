@@ -357,7 +357,7 @@ enum pruss_ethtype {
 
 #define MS_TO_NS(msec)		((msec) * 1000 * 1000)
 #define PRUETH_RED_TABLE_CHECK_PERIOD_MS	10
-#define PRUETH_HAS_PTP(p)       PRUETH_HAS_PRP(p)
+#define PRUETH_HAS_PTP(p)       (PRUETH_HAS_PRP(p) || PRUETH_HAS_HSR(p))
 /* A group of PCPs are mapped to a Queue. This is the size of firmware
  * array in shared memory
  */

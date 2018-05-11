@@ -113,4 +113,8 @@
 #define PTP_CLK_IDENTITY_OFFSET                 (PTP_PREV_TX_TIMESTAMP_P2 + 8)               /* 8 bytes */
 #define PTP_SCRATCH_MEM                         (PTP_CLK_IDENTITY_OFFSET + 8)                /* 8 bytes */
 
+/* Bit definitions for TIMESYNC_CTRL */
+#define TIMESYNC_CTRL_BG_ENABLE    BIT(0)
+#define TIMESYNC_CTRL_FORCED_2STEP BIT(1)
+
 #endif /* ICSS_TIMESYNC_H_ */

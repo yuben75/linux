@@ -2934,6 +2934,8 @@ static int packet_snd(struct socket *sock, struct msghdr *msg, size_t len)
 
 	sock_tx_timestamp(sk, sockc.tsflags, &skb_shinfo(skb)->tx_flags);
 
+	sock_tx_redundant_info(sk, &sockc.redinfo, skb);
+
 	if (!vnet_hdr.gso_type && (len > dev->mtu + reserve + extra_len) &&
 	    !packet_extra_vlan_len_allowed(dev, skb)) {
 		err = -EMSGSIZE;
@@ -3370,6 +3372,8 @@ static int packet_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 	}
 
 	sock_recv_ts_and_drops(msg, sk, skb);
+
+	sock_recv_redundant_info(msg, sk, skb);
 
 	if (msg->msg_name) {
 		/* If the address length field is there to be filled
