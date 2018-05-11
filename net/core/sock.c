@@ -2101,6 +2101,7 @@ int __sock_cmsg_send(struct sock *sk, struct msghdr *msg, struct cmsghdr *cmsg,
 		     struct sockcm_cookie *sockc)
 {
 	u32 tsflags;
+	struct skb_redundant_info *cred;
 
 	switch (cmsg->cmsg_type) {
 	case SO_MARK:
@@ -2124,6 +2125,15 @@ int __sock_cmsg_send(struct sock *sk, struct msghdr *msg, struct cmsghdr *cmsg,
 	/* SCM_RIGHTS and SCM_CREDENTIALS are semantically in SOL_UNIX. */
 	case SCM_RIGHTS:
 	case SCM_CREDENTIALS:
+		break;
+	case SCM_REDUNDANT:
+		if (cmsg->cmsg_len !=
+		    CMSG_LEN(sizeof(struct skb_redundant_info)))
+			return -EINVAL;
+
+		cred = (struct skb_redundant_info *)CMSG_DATA(cmsg);
+		memcpy(&sockc->redinfo, cred,
+		       sizeof(struct skb_redundant_info));
 		break;
 	default:
 		return -EINVAL;
@@ -2880,6 +2890,7 @@ int sock_recv_errqueue(struct sock *sk, struct msghdr *msg, int len,
 	struct sock_exterr_skb *serr;
 	struct sk_buff *skb;
 	int copied, err;
+	struct skb_redundant_info *sred;
 
 	err = -EAGAIN;
 	skb = sock_dequeue_err_skb(sk);
@@ -2896,6 +2907,9 @@ int sock_recv_errqueue(struct sock *sk, struct msghdr *msg, int len,
 		goto out_free_skb;
 
 	sock_recv_timestamp(msg, sk, skb);
+
+	sred = skb_redinfo(skb);
+	put_cmsg(msg, SOL_SOCKET, SCM_REDUNDANT, sizeof(*sred), sred);
 
 	serr = SKB_EXT_ERR(skb);
 	put_cmsg(msg, level, type, sizeof(serr->ee), &serr->ee);
