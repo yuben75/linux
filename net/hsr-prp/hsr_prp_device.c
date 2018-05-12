@@ -126,23 +126,31 @@ void hsr_prp_check_carrier_and_operstate(struct hsr_prp_priv *priv)
 	hsr_prp_check_announce(master->dev, old_operstate);
 }
 
-int hsr_prp_get_max_mtu(struct hsr_prp_priv *hsr)
+int hsr_prp_get_max_mtu(struct hsr_prp_priv *priv)
 {
 	unsigned int mtu_max;
 	struct hsr_prp_port *port;
 
 	mtu_max = ETH_DATA_LEN;
 	rcu_read_lock();
-	hsr_prp_for_each_port(hsr, port)
+	hsr_prp_for_each_port(priv, port)
 		if (port->type != HSR_PRP_PT_MASTER)
 			mtu_max = min(port->dev->mtu, mtu_max);
+
 	rcu_read_unlock();
 
 	if (mtu_max < HSR_PRP_HLEN)
 		return 0;
-	return mtu_max - HSR_PRP_HLEN;
-}
 
+	/* For offloaded keep the mtu same as ETH_DATA_LEN as
+	 * h/w is expected to extend the frame to accommodate RCT
+	 * or TAG
+	 */
+	if (!priv->rx_offloaded)
+		return mtu_max - HSR_PRP_HLEN;
+
+	return mtu_max;
+}
 
 static int hsr_prp_dev_change_mtu(struct net_device *dev, int new_mtu)
 {
@@ -221,7 +229,7 @@ static int hsr_prp_dev_close(struct net_device *dev)
 	return 0;
 }
 
-static netdev_features_t hsr_prp_features_recompute(struct hsr_prp_priv *hsr,
+static netdev_features_t hsr_prp_features_recompute(struct hsr_prp_priv *priv,
 						    netdev_features_t features)
 {
 	netdev_features_t mask;
@@ -237,7 +245,7 @@ static netdev_features_t hsr_prp_features_recompute(struct hsr_prp_priv *hsr,
 	 * may become enabled.
 	 */
 	features &= ~NETIF_F_ONE_FOR_ALL;
-	hsr_prp_for_each_port(hsr, port)
+	hsr_prp_for_each_port(priv, port)
 		features = netdev_increment_features(features,
 						     port->dev->features,
 						     mask);
@@ -267,7 +275,6 @@ static int hsr_prp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	return NETDEV_TX_OK;
 }
 
-
 static const struct header_ops hsr_prp_header_ops = {
 	.create	 = eth_header,
 	.parse	 = eth_header_parse,
@@ -296,8 +303,7 @@ static void send_supervision_frame(struct hsr_prp_port *master,
 			sizeof(struct hsr_tag) +
 			sizeof(struct hsr_prp_sup_tag) +
 			sizeof(struct hsr_prp_sup_payload) + hlen + tlen);
-
-	if (skb == NULL)
+	if (!skb)
 		return;
 
 	skb_reserve(skb, hlen);
@@ -415,12 +421,12 @@ static void hsr_prp_announce(unsigned long data)
 /* According to comments in the declaration of struct net_device, this function
  * is "Called from unregister, can be used to call free_netdev". Ok then...
  */
-static void hsr_prp_dev_destroy(struct net_device *hsr_dev)
+static void hsr_prp_dev_destroy(struct net_device *hsr_prp_dev)
 {
 	struct hsr_prp_priv *priv;
 	struct hsr_prp_port *port;
 
-	priv = netdev_priv(hsr_dev);
+	priv = netdev_priv(hsr_prp_dev);
 
 	hsr_prp_debugfs_term(priv);
 
