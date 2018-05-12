@@ -110,7 +110,6 @@ int hsr_prp_create_self_node(struct list_head *self_node_db,
 	return 0;
 }
 
-
 /* Allocate an hsr_node and add it to node_db. 'addr' is the node's AddressA;
  * seq_out is used to initialize filtering of outgoing duplicate frames
  * originating from the newly added node.
@@ -260,7 +259,6 @@ done:
 	skb_push(skb, sizeof(struct hsrv1_ethhdr_sp));
 }
 
-
 /* 'skb' is a frame meant for this host, that is to be passed to upper layers.
  *
  * If the frame was sent by a node's B interface, replace the source
@@ -307,8 +305,6 @@ void hsr_addr_subst_dest(struct hsr_prp_node *node_src, struct sk_buff *skb,
 	}
 	if (port->type != node_dst->addr_b_port)
 		return;
-
-	ether_addr_copy(eth_hdr(skb)->h_dest, node_dst->mac_address_b);
 
 	if (is_valid_ether_addr(node_dst->mac_address_b))
 		ether_addr_copy(eth_hdr(skb)->h_dest, node_dst->mac_address_b);
@@ -407,10 +403,10 @@ void hsr_prp_prune_nodes(unsigned long data)
 
 		/* Warn of ring error only as long as we get frames at all */
 		if (time_is_after_jiffies(timestamp +
-					  msecs_to_jiffies(1.5 * HSR_PRP_MAX_SLAVE_DIFF))) {
+			msecs_to_jiffies(1.5 * HSR_PRP_MAX_SLAVE_DIFF))) {
 			rcu_read_lock();
 			port = get_late_port(priv, node);
-			if (port != NULL)
+			if (port)
 				hsr_nl_ringerror(priv,
 						 node->mac_address_a, port);
 			rcu_read_unlock();
@@ -453,7 +449,6 @@ void *hsr_prp_get_next_node(struct hsr_prp_priv *priv, void *_pos,
 	return NULL;
 }
 
-
 int hsr_prp_get_node_data(struct hsr_prp_priv *priv,
 			  const unsigned char *addr,
 			  unsigned char addr_b[ETH_ALEN],
@@ -464,7 +459,6 @@ int hsr_prp_get_node_data(struct hsr_prp_priv *priv,
 	struct hsr_prp_node *node;
 	struct hsr_prp_port *port;
 	unsigned long tdiff;
-
 
 	rcu_read_lock();
 	node = find_node_by_addr_a(&priv->node_db, addr);
