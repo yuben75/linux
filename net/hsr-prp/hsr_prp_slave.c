@@ -18,7 +18,7 @@
 #include "hsr_prp_forward.h"
 #include "hsr_prp_framereg.h"
 
-static rx_handler_result_t hsr_handle_frame(struct sk_buff **pskb)
+static rx_handler_result_t hsr_prp_handle_frame(struct sk_buff **pskb)
 {
 	struct sk_buff *skb = *pskb;
 	struct hsr_prp_port *port;
@@ -86,17 +86,16 @@ finish_pass:
 
 bool hsr_prp_port_exists(const struct net_device *dev)
 {
-	return rcu_access_pointer(dev->rx_handler) == hsr_handle_frame;
+	return rcu_access_pointer(dev->rx_handler) == hsr_prp_handle_frame;
 }
 
-
-static int hsr_check_dev_ok(struct net_device *dev)
+static int hsr_prp_check_dev_ok(struct net_device *dev)
 {
 	/* Don't allow HSR on non-ethernet like devices */
 	if ((dev->flags & IFF_LOOPBACK) || (dev->type != ARPHRD_ETHER) ||
 	    (dev->addr_len != ETH_ALEN)) {
 		netdev_info(dev,
-			    "Cannot use loopback or non-ethernet device as HSR slave.\n");
+			    "Can't use lpbk or non-eth device as HSR slave.\n");
 		return -EINVAL;
 	}
 
@@ -124,7 +123,8 @@ static int hsr_check_dev_ok(struct net_device *dev)
 }
 
 /* Setup device to be added to the HSR bridge. */
-static int hsr_portdev_setup(struct net_device *dev, struct hsr_prp_port *port)
+static int hsr_prp_portdev_setup(struct net_device *dev,
+				 struct hsr_prp_port *port)
 {
 	int res;
 
@@ -138,7 +138,7 @@ static int hsr_portdev_setup(struct net_device *dev, struct hsr_prp_port *port)
 	 * res = netdev_master_upper_dev_link(port->dev, port->hsr->dev); ?
 	 */
 
-	res = netdev_rx_handler_register(dev, hsr_handle_frame, port);
+	res = netdev_rx_handler_register(dev, hsr_prp_handle_frame, port);
 	if (res)
 		goto fail_rx_handler;
 	dev_disable_lro(dev);
@@ -160,7 +160,7 @@ int hsr_prp_add_port(struct hsr_prp_priv *priv, struct net_device *dev,
 	int res;
 
 	if (type != HSR_PRP_PT_MASTER) {
-		res = hsr_check_dev_ok(dev);
+		res = hsr_prp_check_dev_ok(dev);
 		if (res)
 			return res;
 	}
@@ -174,7 +174,7 @@ int hsr_prp_add_port(struct hsr_prp_priv *priv, struct net_device *dev,
 		return -ENOMEM;
 
 	if (type != HSR_PRP_PT_MASTER) {
-		res = hsr_portdev_setup(dev, port);
+		res = hsr_prp_portdev_setup(dev, port);
 		if (res)
 			goto fail_dev_setup;
 	}
