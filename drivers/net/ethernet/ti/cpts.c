@@ -1043,7 +1043,7 @@ static int cpts_of_1pps_parse(struct cpts *cpts, struct device_node *node)
 		return ret;
 	}
 	cpts->ref_enable_gpio = gpio;
-	gpio_direction_output(gpio, 0);
+	gpio_direction_output(gpio, 1);
 
 	return 0;
 }
@@ -1347,7 +1347,7 @@ static void inline cpts_turn_on_off_1pps_output(struct cpts *cpts, u64 ts)
 		if (cpts->ref_enable == 1) {
 			pinctrl_select_state(cpts->pins,
 					     cpts->pin_state_ref_on);
-			gpio_set_value(cpts->ref_enable_gpio, 1);
+			gpio_set_value(cpts->ref_enable_gpio, 0);
 		}
 
 		pr_debug("1pps on at %llu\n", ts);
@@ -1361,7 +1361,7 @@ static void inline cpts_turn_on_off_1pps_output(struct cpts *cpts, u64 ts)
 		if (cpts->ref_enable == 1) {
 			pinctrl_select_state(cpts->pins,
 					     cpts->pin_state_ref_off);
-			gpio_set_value(cpts->ref_enable_gpio, 0);
+			gpio_set_value(cpts->ref_enable_gpio, 1);
 		}
 	}
 }
