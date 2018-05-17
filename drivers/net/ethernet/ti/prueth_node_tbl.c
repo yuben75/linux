@@ -61,6 +61,13 @@ int node_table_insert(struct prueth *prueth, u8 *mac, int port, int sv_frame,
 	unsigned long flags;
 	int ret = RED_OK;
 
+	/* Will encounter a null mac_queue if we are in the middle of
+	 * ndo_close. So check and return. Otherwise a kernel crash is
+	 * seen when doing ifdown continuously.
+	 */
+	if (!q)
+		return ret;
+
 	spin_lock_irqsave(lock, flags);
 	if (q->full) {
 		ret = RED_ERR;
