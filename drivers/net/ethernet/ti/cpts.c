@@ -985,20 +985,6 @@ static int cpts_of_1pps_parse(struct cpts *cpts, struct device_node *node)
 		return PTR_ERR(cpts->pin_state_pwm_off);
 	}
 
-	cpts->pin_state_ref_on = pinctrl_lookup_state(cpts->pins, "ref_on");
-	if (IS_ERR(cpts->pin_state_ref_on)) {
-		dev_err(cpts->dev, "lookup for ref_on pin state failed: %ld\n",
-			PTR_ERR(cpts->pin_state_ref_on));
-		return PTR_ERR(cpts->pin_state_ref_on);
-	}
-
-	cpts->pin_state_ref_off = pinctrl_lookup_state(cpts->pins, "ref_off");
-	if (IS_ERR(cpts->pin_state_ref_off)) {
-		dev_err(cpts->dev, "lookup for ref_off pin state failed: %ld\n",
-			PTR_ERR(cpts->pin_state_ref_off));
-		return PTR_ERR(cpts->pin_state_ref_off);
-	}
-
 	cpts->pin_state_latch_on = pinctrl_lookup_state(cpts->pins,
 							"latch_on");
 	if (IS_ERR(cpts->pin_state_latch_on)) {
@@ -1029,21 +1015,42 @@ static int cpts_of_1pps_parse(struct cpts *cpts, struct device_node *node)
 	cpts->pps_enable_gpio = gpio;
 	gpio_direction_output(gpio, 0);
 
+	/* The 1PPS reference signal is only optional and therefore the
+	 * corresponding pins may not be provided by DTB.
+	 */
+
 	gpio = of_get_named_gpio(node, "ref-enable-gpios", 0);
 	if (!gpio_is_valid(gpio)) {
-		dev_err(cpts->dev, "failed to parse ref-enable gpio\n");
-		devm_gpio_free(cpts->dev, cpts->pps_enable_gpio);
-		return gpio;
-	}
+		cpts->ref_enable_gpio = -1;
+	} else {
+		ret = devm_gpio_request(cpts->dev, gpio, "ref-enable-ctrl");
+		if (ret) {
+			dev_err(cpts->dev,
+				"failed to acquire ref-enable gpio\n");
+			devm_gpio_free(cpts->dev, cpts->pps_enable_gpio);
+			return ret;
+		}
+		cpts->ref_enable_gpio = gpio;
+		gpio_direction_output(gpio, 1);
 
-	ret = devm_gpio_request(cpts->dev, gpio, "ref-enable-ctrl");
-	if (ret) {
-		dev_err(cpts->dev, "failed to acquire ref-enable gpio\n");
-		devm_gpio_free(cpts->dev, cpts->pps_enable_gpio);
-		return ret;
+		cpts->pin_state_ref_on = pinctrl_lookup_state(cpts->pins,
+							      "ref_on");
+		if (IS_ERR(cpts->pin_state_ref_on)) {
+			dev_err(cpts->dev,
+				"lookup for ref_on pin state failed: %ld\n",
+				PTR_ERR(cpts->pin_state_ref_on));
+			return PTR_ERR(cpts->pin_state_ref_on);
+		}
+
+		cpts->pin_state_ref_off = pinctrl_lookup_state(cpts->pins,
+							       "ref_off");
+		if (IS_ERR(cpts->pin_state_ref_off)) {
+			dev_err(cpts->dev,
+				"lookup for ref_off pin state failed: %ld\n",
+				PTR_ERR(cpts->pin_state_ref_off));
+			return PTR_ERR(cpts->pin_state_ref_off);
+		}
 	}
-	cpts->ref_enable_gpio = gpio;
-	gpio_direction_output(gpio, 1);
 
 	return 0;
 }
@@ -1169,7 +1176,7 @@ struct cpts *cpts_create(struct device *dev, void __iomem *regs,
 		/* Enable 1PPS related features	*/
 		cpts->info.pps		= 1;
 		cpts->info.n_ext_ts	= CPTS_MAX_LATCH;
-		cpts->info.n_per_out	= 1;
+		cpts->info.n_per_out	= (cpts->ref_enable_gpio >= 0) ? 1 : 0;
 	}
 #endif
 
@@ -1331,7 +1338,8 @@ static void cpts_tmr_init(struct cpts *cpts)
 			      OMAP_TIMER_INT_CAPTURE, 0);
 
 	pinctrl_select_state(cpts->pins, cpts->pin_state_pwm_off);
-	pinctrl_select_state(cpts->pins, cpts->pin_state_ref_off);
+	if (cpts->ref_enable_gpio >= 0)
+		pinctrl_select_state(cpts->pins, cpts->pin_state_ref_off);
 	pinctrl_select_state(cpts->pins, cpts->pin_state_latch_off);
 }
 
