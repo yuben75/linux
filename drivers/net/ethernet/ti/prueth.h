@@ -16,6 +16,7 @@
 #ifndef __NET_TI_PRUETH_H
 #define __NET_TI_PRUETH_H
 
+#include <linux/kobject.h>
 #include <linux/hrtimer.h>
 #include <linux/kthread.h>
 #include <linux/pruss.h>
@@ -359,6 +360,15 @@ enum pruss_ethtype {
 #define MS_TO_NS(msec)		((msec) * 1000 * 1000)
 #define PRUETH_RED_TABLE_CHECK_PERIOD_MS	10
 #define PRUETH_HAS_PTP(p)       (PRUETH_HAS_PRP(p) || PRUETH_HAS_HSR(p))
+/* NSP (Network Storm Prevention) timer re-uses NT timer */
+#define PRUETH_DEFAULT_NSP_TIMER_MS	100
+#define PRUETH_DEFAULT_NSP_TIMER_COUNT	\
+		(PRUETH_DEFAULT_NSP_TIMER_MS / PRUETH_RED_TABLE_CHECK_PERIOD_MS)
+#define PRUETH_NSP_CREDIT_SHIFT       8
+#define PRUETH_NSP_ENABLE             1
+#define PRUETH_NSP_DISABLE            0
+#define PRUETH_NSP_EN_MASK            0xff
+
 /* A group of PCPs are mapped to a Queue. This is the size of firmware
  * array in shared memory
  */
@@ -483,6 +493,9 @@ struct prueth_emac {
 
 	spinlock_t lock;	/* serialize access */
 	spinlock_t addr_lock;
+	unsigned int nsp_timer_count;
+	unsigned int nsp_credit;
+	struct kobject kobj;
 #ifdef	CONFIG_DEBUG_FS
 	struct dentry *root_dir;
 	struct dentry *stats_file;
@@ -611,4 +624,6 @@ struct prueth {
 	spinlock_t	nt_lock;
 };
 
+int prueth_sysfs_init(struct prueth_emac *emac);
+void prueth_remove_sysfs_entries(struct prueth_emac *emac);
 #endif /* __NET_TI_PRUETH_H */

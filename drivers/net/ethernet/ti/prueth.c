@@ -1126,13 +1126,34 @@ static enum hrtimer_restart prueth_red_table_timer(struct hrtimer *timer)
 {
 	struct prueth *prueth = container_of(timer, struct prueth,
 					     tbl_check_timer);
-	void __iomem *dram1 = prueth->mem[PRUETH_MEM_DRAM1].va;
+	void __iomem *dram;
+	struct prueth_emac *emac;
 	unsigned long flags;
+	enum prueth_mac mac;
+
 
 	hrtimer_forward_now(timer, ktime_set(0, prueth->tbl_check_period));
 	if (prueth->emac_configured !=
 		(BIT(PRUETH_PORT_MII0) | BIT(PRUETH_PORT_MII1)))
 		return HRTIMER_RESTART;
+
+	for (mac = PRUETH_MAC0; mac <= PRUETH_MAC1; mac++) {
+		emac = prueth->emac[mac];
+		if (emac->port_id == PRUETH_PORT_MII0)
+			dram = prueth->mem[PRUETH_MEM_DRAM0].va;
+		else
+			dram = prueth->mem[PRUETH_MEM_DRAM1].va;
+
+		if ((prueth->emac_configured & BIT(emac->port_id)) &&
+		    (emac->nsp_credit & PRUETH_NSP_EN_MASK)) {
+			if (!--emac->nsp_timer_count) {
+				writel(emac->nsp_credit,
+				       dram + STORM_PREVENTION_OFFSET);
+				emac->nsp_timer_count =
+				       PRUETH_DEFAULT_NSP_TIMER_COUNT;
+			}
+		}
+	}
 
 	if (prueth->node_table_clear) {
 		pru_spin_lock(prueth->nt);
@@ -1147,11 +1168,11 @@ static enum hrtimer_restart prueth_red_table_timer(struct hrtimer *timer)
 		prueth->tbl_check_mask &= ~HOST_TIMER_NODE_TABLE_CLEAR_BIT;
 	}
 
-
 	/* schedule work here */
 	kthread_queue_work(prueth->nt_kworker, &prueth->nt_work);
 
-	writel(prueth->tbl_check_mask, dram1 + HOST_TIMER_CHECK_FLAGS);
+	dram =  prueth->mem[PRUETH_MEM_DRAM1].va;
+	writel(prueth->tbl_check_mask, dram + HOST_TIMER_CHECK_FLAGS);
 	return HRTIMER_RESTART;
 }
 
@@ -2829,8 +2850,11 @@ static int emac_ndo_open(struct net_device *ndev)
 	if (ret)
 		goto clean_debugfs_hsr_prp;
 
-	if (PRUETH_HAS_RED(prueth))
+	if (PRUETH_HAS_RED(prueth)) {
+		/* initialized Network Storm Prevention timer count */
+		emac->nsp_timer_count = PRUETH_DEFAULT_NSP_TIMER_COUNT;
 		prueth_start_red_table_timer(prueth);
+	}
 
 	prueth->emac_configured |= BIT(emac->port_id);
 	mutex_unlock(&prueth->mlock);
@@ -3792,7 +3816,6 @@ static int prueth_netdev_init(struct prueth *prueth,
 	emac->prueth = prueth;
 	emac->ndev = ndev;
 	emac->port_id = port;
-
 	if (PRUETH_HAS_PTP(prueth))
 		tx_int = "ptp_tx";
 	else
@@ -4159,6 +4182,7 @@ static int prueth_probe(struct platform_device *pdev)
 		}
 
 		prueth_debugfs_init(prueth->emac[PRUETH_MAC0]);
+		prueth_sysfs_init(prueth->emac[PRUETH_MAC0]);
 		prueth->registered_netdevs[PRUETH_MAC0] = prueth->emac[PRUETH_MAC0]->ndev;
 	}
 
@@ -4170,6 +4194,7 @@ static int prueth_probe(struct platform_device *pdev)
 		}
 
 		prueth_debugfs_init(prueth->emac[PRUETH_MAC1]);
+		prueth_sysfs_init(prueth->emac[PRUETH_MAC1]);
 		prueth->registered_netdevs[PRUETH_MAC1] = prueth->emac[PRUETH_MAC1]->ndev;
 	}
 
@@ -4232,7 +4257,8 @@ static int prueth_remove(struct platform_device *pdev)
 	iep_release(prueth->iep);
 	prueth_hsr_prp_debugfs_term(prueth);
 	prueth->tbl_check_period = 0;
-
+	prueth_remove_sysfs_entries(prueth->emac[PRUETH_MAC0]);
+	prueth_remove_sysfs_entries(prueth->emac[PRUETH_MAC1]);
 	for (i = 0; i < PRUETH_NUM_MACS; i++) {
 		if (!prueth->registered_netdevs[i])
 			continue;
