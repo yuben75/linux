@@ -255,6 +255,7 @@ struct lre_statistics {
 	u32 node_table_full;
 	u32 lre_multicast_dropped;
 	u32 lre_vlan_dropped;
+	u32 lre_intr_tmr_exp;
 
 	/* additional debug counters */
 	u32 lre_total_rx_a; /* count of all frames received at port-A */
@@ -430,6 +431,7 @@ enum prueth_mem {
 	PRUETH_MEM_DRAM1,
 	PRUETH_MEM_SHARED_RAM,
 	PRUETH_MEM_IEP,
+	PRUETH_MEM_ECAP,
 	PRUETH_MEM_OCMC,
 	PRUETH_MEM_MAX,
 };
@@ -597,6 +599,7 @@ struct prueth {
 	struct prueth_mmap_ocmc_cfg mmap_ocmc_cfg;
 	struct lre_statistics lre_stats;
 	struct iep *iep;
+	unsigned int rx_pacing_timeout;
 	/* To provide a synchronization point to wait before proceed to port
 	 * specific initialization or configuration. This is needed when
 	 * concurrent device open happens.
