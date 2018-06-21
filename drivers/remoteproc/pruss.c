@@ -24,6 +24,7 @@
  */
 struct pruss_private_data {
 	bool has_no_sharedram;
+	bool ecap_used;
 };
 
 /**
@@ -260,7 +261,8 @@ struct pruss_private_data *pruss_get_private_data(struct platform_device *pdev)
 {
 	const struct pruss_match_private_data *data;
 
-	if (!of_device_is_compatible(pdev->dev.of_node, "ti,am4376-pruss"))
+	if (!of_device_is_compatible(pdev->dev.of_node, "ti,am4376-pruss") &&
+	    !of_device_is_compatible(pdev->dev.of_node, "ti,am5728-pruss"))
 		return NULL;
 
 	data = of_device_get_match_data(&pdev->dev);
@@ -281,7 +283,8 @@ static int pruss_probe(struct platform_device *pdev)
 	struct resource res;
 	int ret, i, index;
 	const struct pruss_private_data *data;
-	const char *mem_names[PRUSS_MEM_MAX] = { "dram0", "dram1", "shrdram2", "iep" };
+	const char *mem_names[PRUSS_MEM_MAX] = {
+		"dram0", "dram1", "shrdram2", "iep", "ecap" };
 
 	if (!node) {
 		dev_err(dev, "Non-DT platform device not supported\n");
@@ -332,6 +335,10 @@ static int pruss_probe(struct platform_device *pdev)
 	for (i = 0; i < ARRAY_SIZE(mem_names); i++) {
 		if (data && data->has_no_sharedram &&
 		    !strcmp(mem_names[i], "shrdram2"))
+			continue;
+
+		if ((!data || !data->ecap_used) &&
+		    !strcmp(mem_names[i], "ecap"))
 			continue;
 
 		index = of_property_match_string(np, "reg-names", mem_names[i]);
@@ -409,10 +416,28 @@ static const struct pruss_match_private_data am437x_match_data[] = {
 	},
 };
 
+static const struct pruss_private_data am57xx_pruss_priv_data = {
+	.ecap_used = true,
+};
+
+static const struct pruss_match_private_data am57xx_match_data[] = {
+	{
+		.device_name	= "4b200000.pruss",
+		.priv_data	= &am57xx_pruss_priv_data,
+	},
+	{
+		.device_name	= "4b280000.pruss",
+		.priv_data	= &am57xx_pruss_priv_data,
+	},
+	{
+		/* sentinel */
+	},
+};
+
 static const struct of_device_id pruss_of_match[] = {
 	{ .compatible = "ti,am3356-pruss", .data = NULL, },
 	{ .compatible = "ti,am4376-pruss", .data = &am437x_match_data, },
-	{ .compatible = "ti,am5728-pruss", .data = NULL, },
+	{ .compatible = "ti,am5728-pruss", .data = &am57xx_match_data, },
 	{ .compatible = "ti,k2g-pruss", .data = NULL, },
 	{ /* sentinel */ },
 };

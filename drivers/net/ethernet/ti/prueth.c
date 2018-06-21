@@ -55,7 +55,8 @@ MODULE_PARM_DESC(debug_level, "PRUETH debug level (NETIF_MSG bits)");
 
 /* ensure that order of PRUSS mem regions is same as above */
 static enum pruss_mem pruss_mem_ids[] = { PRUSS_MEM_DRAM0, PRUSS_MEM_DRAM1,
-					  PRUSS_MEM_SHRD_RAM2, PRUSS_MEM_IEP };
+					  PRUSS_MEM_SHRD_RAM2, PRUSS_MEM_IEP,
+					  PRUSS_MEM_ECAP };
 
 static int pruss0_ethtype = PRUSS_ETHTYPE_EMAC;
 module_param(pruss0_ethtype, int, 0444);
@@ -97,6 +98,92 @@ MODULE_PARM_DESC(pruss2_mc_mask, "Choose pruss2 MC mask");
 #define IEP_GLOBAL_CFG_REG_MASK      0xfffff
 #define IEP_GLOBAL_CFG_REG_PTP_VAL      0x111
 #define IEP_GLOBAL_CFG_REG_DEF_VAL      0x551
+
+/* ECAP registers */
+#define ECAP_TSCTR                      0
+#define ECAP_CAP1                       8
+#define ECAP_CAP2                       0xC
+#define ECAP_ECCTL1                     0x28
+#define ECAP_ECCTL2                     0x2A
+#define ECAP_ECEINT                     0x2C
+#define ECAP_ECCLR                      0x30
+
+#define ECAP_ECCTL2_TSCTRSTOP_MASK      0x10
+#define ECAP_ECCTL2_CAP_APWM_MASK       0x200
+#define ECAP_ECCLR_INT_MASK             1
+#define ECAP_ECCLR_CEVT1_MASK           2
+#define ECAP_ECCLR_CEVT2_MASK           4
+#define ECAP_ECCLR_CEVT3_MASK           8
+#define ECAP_ECCLR_CEVT4_MASK           0x10
+#define ECAP_ECCLR_CNTOVF_MASK          0x20
+#define ECAP_ECCLR_PRDEQ_MASK           0x40
+#define ECAP_ECCLR_CMPEQ_MASK           0x80
+#define ECAP_ECEINT_PRDEQ_MASK          0x40
+
+#define ECAP_ECCTL2_INIT_VAL           (ECAP_ECCTL2_TSCTRSTOP_MASK | \
+					ECAP_ECCTL2_CAP_APWM_MASK)
+#define ECAP_CAP2_MAX_COUNT            0xFFFFFFFF
+#define ECAP_ECCLR_CLR_VAL             0xFF
+
+/* in usec */
+#define DEFAULT_RX_TIMEOUT_USEC       123
+/* Duration of 3 frames of 1528 bytes each. If we go beyond this,
+ * receive buffer overflow may happen assuming 4 MTU buffer. So
+ * set this as the limit
+ */
+#define MAX_RX_TIMEOUT_USEC            (123 * 3)
+/* ECAP has 200Mhz clock. So each tick is 5 nsec. i.e 1000/200 */
+#define ECAP_TICK_NSEC                  5
+
+static int prueth_ecap_initialization(struct prueth *prueth,
+				      u32 new_timeout_val,
+				      u32 use_adaptive,
+				      unsigned int *curr_timeout_val)
+{
+	void __iomem *ecap = prueth->mem[PRUETH_MEM_ECAP].va;
+	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
+	u8 val = INTR_PAC_DIS_ADP_LGC_DIS;
+
+	/* Not all platform uses ecap. So check and return */
+	if (!ecap)
+		return -ENOTSUPP;
+
+	if (!new_timeout_val) {
+		/* disable pacing */
+		writeb_relaxed(val, sram + INTR_PAC_STATUS_OFFSET);
+		*curr_timeout_val = new_timeout_val;
+		return 0;
+	}
+
+	if (use_adaptive)
+		val = INTR_PAC_ENA_ADP_LGC_ENA;
+	else
+		val = INTR_PAC_ENA_ADP_LGC_DIS;
+
+	if (!*curr_timeout_val) {
+		writew_relaxed(ECAP_ECCTL2_INIT_VAL, ecap + ECAP_ECCTL2);
+		writel_relaxed(ECAP_CAP2_MAX_COUNT, ecap + ECAP_CAP1);
+		writel_relaxed(ECAP_CAP2_MAX_COUNT, ecap + ECAP_CAP2);
+		writeb_relaxed(INTR_PAC_DIS_ADP_LGC_DIS,
+			       sram + INTR_PAC_STATUS_OFFSET);
+		writel_relaxed(new_timeout_val * NSEC_PER_USEC / ECAP_TICK_NSEC,
+			       sram + INTR_PAC_TMR_EXP_OFFSET_PRU0);
+		writel_relaxed(new_timeout_val * NSEC_PER_USEC / ECAP_TICK_NSEC,
+			       sram + INTR_PAC_TMR_EXP_OFFSET_PRU1);
+		writel_relaxed(INTR_PAC_PREV_TS_RESET_VAL,
+			       sram + INTR_PAC_PREV_TS_OFFSET_PRU0);
+		writel_relaxed(INTR_PAC_PREV_TS_RESET_VAL,
+			       sram + INTR_PAC_PREV_TS_OFFSET_PRU1);
+	} else {
+		writel_relaxed(new_timeout_val * NSEC_PER_USEC / ECAP_TICK_NSEC,
+			       sram + INTR_PAC_TMR_EXP_OFFSET_PRU0);
+		writel_relaxed(new_timeout_val * NSEC_PER_USEC / ECAP_TICK_NSEC,
+			       sram + INTR_PAC_TMR_EXP_OFFSET_PRU1);
+	}
+	writeb_relaxed(val, sram + INTR_PAC_STATUS_OFFSET);
+	*curr_timeout_val = new_timeout_val;
+	return 0;
+}
 
 static inline enum prueth_port other_port_id(enum prueth_port port_id)
 {
@@ -2856,6 +2943,16 @@ static int emac_ndo_open(struct net_device *ndev)
 		prueth_start_red_table_timer(prueth);
 	}
 
+	/* Configure ecap for interrupt pacing, Don't
+	 * check return value here as this returns
+	 * error only if there is no ecap register address
+	 * which would result in pacing disabled
+	 */
+	if (!prueth->emac_configured)
+		prueth_ecap_initialization(prueth,
+					   DEFAULT_RX_TIMEOUT_USEC,
+					   0, &prueth->rx_pacing_timeout);
+
 	prueth->emac_configured |= BIT(emac->port_id);
 	mutex_unlock(&prueth->mlock);
 
@@ -2892,6 +2989,12 @@ static int sw_emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
 
 	prueth->emac_configured &= ~BIT(emac->port_id);
+
+	/* disable ECAP timer */
+	if (!prueth->emac_configured)
+		writeb_relaxed(INTR_PAC_DIS_ADP_LGC_DIS,
+			       sram + INTR_PAC_STATUS_OFFSET);
+
 	/* disable and free rx irq */
 	free_irq(emac->rx_irq, emac->ndev);
 	disable_irq(emac->rx_irq);
@@ -3624,6 +3727,7 @@ static const struct {
 	{"lreNodeTableFull", PRUETH_LRE_STAT_OFS(node_table_full)},
 	{"lreMulticastDropped", PRUETH_LRE_STAT_OFS(lre_multicast_dropped)},
 	{"lreVlanDropped", PRUETH_LRE_STAT_OFS(lre_vlan_dropped)},
+	{"lrePaceTimerExpired", PRUETH_LRE_STAT_OFS(lre_intr_tmr_exp)},
 	{"lreTotalRxA", PRUETH_LRE_STAT_OFS(lre_total_rx_a)},
 	{"lreTotalRxB", PRUETH_LRE_STAT_OFS(lre_total_rx_b)},
 	{"lreOverflowPru0", PRUETH_LRE_STAT_OFS(lre_overflow_pru0)},
@@ -3678,6 +3782,53 @@ static void emac_get_strings(struct net_device *ndev, u32 stringset, u8 *data)
 	default:
 		break;
 	}
+}
+
+static int emac_get_coalesce(struct net_device *ndev,
+			     struct ethtool_coalesce *coal)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
+	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
+	void __iomem *ecap = prueth->mem[PRUETH_MEM_ECAP].va;
+	u32 val;
+
+	if (!PRUETH_HAS_RED(prueth) || !ecap)
+		return -EOPNOTSUPP;
+
+	val = readb_relaxed(sram + INTR_PAC_STATUS_OFFSET);
+	coal->use_adaptive_rx_coalesce = (val == INTR_PAC_ENA_ADP_LGC_ENA);
+	coal->rx_coalesce_usecs = prueth->rx_pacing_timeout;
+	return 0;
+}
+
+static int emac_set_coalesce(struct net_device *ndev,
+			     struct ethtool_coalesce *coal)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
+	int ret;
+
+	if (!PRUETH_HAS_RED(prueth))
+		return -EOPNOTSUPP;
+
+	if (coal->rx_coalesce_usecs  > MAX_RX_TIMEOUT_USEC)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&prueth->mlock);
+	/* Start or restart the pacing timer. Also pass rx_pacing_timeout
+	 * separately as it is expected to support pacing for emac firmware
+	 * as well in which case, driver will have to store per emac instance
+	 * timer and the same can be passed to the function here when
+	 * supported
+	 */
+	ret = prueth_ecap_initialization(prueth,
+					 coal->rx_coalesce_usecs,
+					 coal->use_adaptive_rx_coalesce,
+					 &prueth->rx_pacing_timeout);
+	mutex_unlock(&prueth->mlock);
+
+	return ret;
 }
 
 static void emac_get_ethtool_stats(struct net_device *ndev,
@@ -3784,6 +3935,8 @@ static const struct ethtool_ops emac_ethtool_ops = {
 	.get_sset_count = emac_get_sset_count,
 	.get_strings = emac_get_strings,
 	.get_ethtool_stats = emac_get_ethtool_stats,
+	.get_coalesce = emac_get_coalesce,
+	.set_coalesce = emac_set_coalesce,
 };
 
 static int prueth_netdev_init(struct prueth *prueth,
