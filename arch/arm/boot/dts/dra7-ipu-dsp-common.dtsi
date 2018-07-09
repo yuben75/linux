@@ -28,7 +28,8 @@
 
 &ipu1 {
 	mboxes = <&mailbox5 &mbox_ipu1_ipc3x>;
-	timers = <&timer11>;
+        /* IPU1 reserves timer14 for use in EVEs' firmware */
+	timers = <&timer11 &timer14>;
 	watchdog-timers = <&timer7>, <&timer8>;
 };
 
