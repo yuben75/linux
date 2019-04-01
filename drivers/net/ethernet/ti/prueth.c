@@ -180,6 +180,19 @@ static inline int is_hsr_skb(struct sk_buff *skb)
 	return (*(p + 12) == 0x89 && *(p + 13) == 0x2f);
 }
 
+static inline int is_vlan_skb(struct sk_buff *skb)
+{
+	__be16 ethertype;
+
+	if (!skb->data)
+		return 0;
+
+	ethertype = *(skb->data + 12);
+
+	/* FIXME: should use macros to access header fields */
+	return eth_type_vlan(ethertype);
+}
+
 static inline u32 prueth_read_reg(struct prueth *prueth,
 				  enum prueth_mem region,
 				  unsigned int reg)
@@ -581,7 +594,7 @@ static int pruptp_hsr_cut_thru_ts_work_init(struct prueth_emac *emac)
 static int pruptp_rx_timestamp(struct prueth_emac *emac, struct sk_buff *skb)
 {
 	struct prueth *prueth = emac->prueth;
-	bool changed = false;
+	int changed = 0;
 	u32 ts_ofs;
 	u8 ts_msgtype;
 	int ret;
@@ -591,6 +604,10 @@ static int pruptp_rx_timestamp(struct prueth_emac *emac, struct sk_buff *skb)
 	if (!emac_is_ptp_rx_enabled(emac))
 		return -EPERM;
 
+	if (is_vlan_skb(skb)) {
+		skb->data += 4;
+		changed += 4;
+	}
 	if (PRUETH_HAS_HSR(prueth) && is_hsr_skb(skb)) {
 		/* This 6-byte shift is just a trick to skip
 		 * the size of a hsr tag so that the same
@@ -598,13 +615,13 @@ static int pruptp_rx_timestamp(struct prueth_emac *emac, struct sk_buff *skb)
 		 * hsr tagged skbs
 		 */
 		skb->data += 6;
-		changed = true;
+		changed += 6;
 	}
 
 	ts_msgtype = pruptp_ts_msgtype(skb);
 
 	if (changed)
-		skb->data -= 6;
+		skb->data -= changed;
 
 	if ((ts_msgtype != PTP_SYNC_MSG_ID) &&
 	    (ts_msgtype != PTP_PDLY_REQ_MSG_ID) &&
@@ -1675,10 +1692,14 @@ static inline int emac_tx_ts_enqueue(struct prueth_emac *emac,
 {
 	unsigned long flags;
 	struct prueth *prueth = emac->prueth;
-	bool changed = false;
+	int changed = 0;
 	u8 msg_t;
 	struct tx_ev_cb_data *cb;
 
+	if (is_vlan_skb(skb)) {
+		skb->data += 4;
+		changed += 4;
+	}
 	if (PRUETH_HAS_HSR(prueth) && is_hsr_skb(skb)) {
 		/* This 6-byte shift is just a trick to skip
 		 * the size of a hsr tag so that the same
@@ -1686,13 +1707,13 @@ static inline int emac_tx_ts_enqueue(struct prueth_emac *emac,
 		 * hsr tagged skbs
 		 */
 		skb->data += 6;
-		changed = true;
+		changed += 6;
 	}
 
 	msg_t = pruptp_ts_msgtype(skb);
 
 	if (changed)
-		skb->data -= 6;
+		skb->data -= changed;
 
 	if (msg_t > PTP_PDLY_RSP_MSG_ID) {
 		netdev_err(emac->ndev, "invalid msg_t %u\n", msg_t);
