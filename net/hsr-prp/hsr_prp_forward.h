@@ -9,7 +9,7 @@
 #define __HSR_FORWARD_H
 
 #include <linux/netdevice.h>
-#include "hsr_main.h"
+#include "hsr_prp_main.h"
 
 void hsr_forward_skb(struct sk_buff *skb, struct hsr_port *port);
 

@@ -8,7 +8,7 @@
 #ifndef __HSR_FRAMEREG_H
 #define __HSR_FRAMEREG_H
 
-#include "hsr_main.h"
+#include "hsr_prp_main.h"
 
 struct hsr_node;
 

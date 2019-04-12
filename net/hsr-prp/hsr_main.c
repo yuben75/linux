@@ -9,11 +9,11 @@
 #include <linux/rculist.h>
 #include <linux/timer.h>
 #include <linux/etherdevice.h>
-#include "hsr_main.h"
-#include "hsr_device.h"
+#include "hsr_prp_main.h"
+#include "hsr_prp_device.h"
 #include "hsr_netlink.h"
-#include "hsr_framereg.h"
-#include "hsr_slave.h"
+#include "hsr_prp_framereg.h"
+#include "hsr_prp_slave.h"
 
 static int hsr_netdev_notify(struct notifier_block *nb, unsigned long event,
 			     void *ptr)

@@ -14,8 +14,8 @@
 #include <linux/etherdevice.h>
 #include <linux/slab.h>
 #include <linux/rculist.h>
-#include "hsr_main.h"
-#include "hsr_framereg.h"
+#include "hsr_prp_main.h"
+#include "hsr_prp_framereg.h"
 #include "hsr_netlink.h"
 
 /*	TODO: use hash lists for mac addresses (linux/jhash.h)?    */

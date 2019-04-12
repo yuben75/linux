@@ -10,7 +10,7 @@
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
 #include <linux/rtnetlink.h>
-#include "hsr_main.h"
+#include "hsr_prp_main.h"
 
 int hsr_add_port(struct hsr_priv *hsr, struct net_device *dev,
 		 enum hsr_port_type pt);

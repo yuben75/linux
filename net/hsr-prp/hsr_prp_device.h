@@ -9,7 +9,7 @@
 #define __HSR_DEVICE_H
 
 #include <linux/netdevice.h>
-#include "hsr_main.h"
+#include "hsr_prp_main.h"
 
 void hsr_dev_setup(struct net_device *dev);
 int hsr_dev_finalize(struct net_device *hsr_dev, struct net_device *slave[2],

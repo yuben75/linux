@@ -1,9 +1,9 @@
 #
-# Makefile for HSR
+# Makefile for HSR & PRP
 #
 
-obj-$(CONFIG_HSR_PRP)	+= hsr.o
+obj-$(CONFIG_HSR_PRP)	+= hsr-prp.o
 
-hsr-y			:= hsr_main.o hsr_framereg.o hsr_device.o \
-			   hsr_netlink.o hsr_slave.o hsr_forward.o
-hsr-$(CONFIG_DEBUG_FS) += hsr_debugfs.o
+hsr-prp-y		:= hsr_prp_main.o hsr_prp_framereg.o hsr_prp_device.o \
+			   hsr_netlink.o hsr_prp_slave.o hsr_prp_forward.o
+hsr-prp-$(CONFIG_DEBUG_FS) += hsr_prp_debugfs.o

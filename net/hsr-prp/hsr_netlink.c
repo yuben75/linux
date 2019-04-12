@@ -7,13 +7,13 @@
  * Routines for handling Netlink messages for HSR.
  */
 
-#include "hsr_netlink.h"
 #include <linux/kernel.h>
 #include <net/rtnetlink.h>
 #include <net/genetlink.h>
-#include "hsr_main.h"
-#include "hsr_device.h"
-#include "hsr_framereg.h"
+#include "hsr_netlink.h"
+#include "hsr_prp_main.h"
+#include "hsr_prp_device.h"
+#include "hsr_prp_framereg.h"
 
 static const struct nla_policy hsr_policy[IFLA_HSR_MAX + 1] = {
 	[IFLA_HSR_SLAVE1]		= { .type = NLA_U32 },

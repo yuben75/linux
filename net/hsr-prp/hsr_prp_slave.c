@@ -5,14 +5,14 @@
  *	2011-2014 Arvid Brodin, arvid.brodin@alten.se
  */
 
-#include "hsr_slave.h"
 #include <linux/etherdevice.h>
 #include <linux/if_arp.h>
 #include <linux/if_vlan.h>
-#include "hsr_main.h"
-#include "hsr_device.h"
-#include "hsr_forward.h"
-#include "hsr_framereg.h"
+#include "hsr_prp_slave.h"
+#include "hsr_prp_main.h"
+#include "hsr_prp_device.h"
+#include "hsr_prp_forward.h"
+#include "hsr_prp_framereg.h"
 
 static rx_handler_result_t hsr_handle_frame(struct sk_buff **pskb)
 {

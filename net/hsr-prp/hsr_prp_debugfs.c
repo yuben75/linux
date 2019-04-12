@@ -1,5 +1,5 @@
 /*
- * hsr_debugfs code
+ * hsr_prp_debugfs code
  * Copyright (C) 2019 Texas Instruments Incorporated
  *
  * Author(s):
@@ -17,8 +17,8 @@
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/debugfs.h>
-#include "hsr_main.h"
-#include "hsr_framereg.h"
+#include "hsr_prp_main.h"
+#include "hsr_prp_framereg.h"
 
 static void print_mac_address(struct seq_file *sfp, unsigned char *mac)
 {
