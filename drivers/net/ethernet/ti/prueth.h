@@ -10,6 +10,42 @@
 
 #define PRUETH_NUMQUEUES	5
 
+/* ECAP registers */
+#define ECAP_TSCTR                      0
+#define ECAP_CAP1                       8
+#define ECAP_CAP2                       0xC
+#define ECAP_ECCTL1                     0x28
+#define ECAP_ECCTL2                     0x2A
+#define ECAP_ECEINT                     0x2C
+#define ECAP_ECCLR                      0x30
+
+#define ECAP_ECCTL2_TSCTRSTOP_MASK      0x10
+#define ECAP_ECCTL2_CAP_APWM_MASK       0x200
+#define ECAP_ECCLR_INT_MASK             1
+#define ECAP_ECCLR_CEVT1_MASK           2
+#define ECAP_ECCLR_CEVT2_MASK           4
+#define ECAP_ECCLR_CEVT3_MASK           8
+#define ECAP_ECCLR_CEVT4_MASK           0x10
+#define ECAP_ECCLR_CNTOVF_MASK          0x20
+#define ECAP_ECCLR_PRDEQ_MASK           0x40
+#define ECAP_ECCLR_CMPEQ_MASK           0x80
+#define ECAP_ECEINT_PRDEQ_MASK          0x40
+
+#define ECAP_ECCTL2_INIT_VAL           (ECAP_ECCTL2_TSCTRSTOP_MASK | \
+					ECAP_ECCTL2_CAP_APWM_MASK)
+#define ECAP_CAP2_MAX_COUNT            0xFFFFFFFF
+#define ECAP_ECCLR_CLR_VAL             0xFF
+
+/* in usec */
+#define DEFAULT_RX_TIMEOUT_USEC       123
+/* Duration of 3 frames of 1528 bytes each. If we go beyond this,
+ * receive buffer overflow may happen assuming 4 MTU buffer. So
+ * set this as the limit
+ */
+#define MAX_RX_TIMEOUT_USEC            (123 * 3)
+/* ECAP has 200Mhz clock. So each tick is 5 nsec. i.e 1000/200 */
+#define ECAP_TICK_NSEC                  5
+
 /**
  * struct prueth_queue_desc - Queue descriptor
  * @rd_ptr:	Read pointer, points to a buffer descriptor in Shared PRU RAM.

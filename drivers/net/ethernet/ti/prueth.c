@@ -123,13 +123,15 @@ enum prueth_mem {
 	PRUETH_MEM_DRAM0 = 0,
 	PRUETH_MEM_DRAM1,
 	PRUETH_MEM_SHARED_RAM,
+	PRUETH_MEM_ECAP,
 	PRUETH_MEM_OCMC,
 	PRUETH_MEM_MAX,
 };
 
 /* ensure that order of PRUSS mem regions is same as above */
 static enum pruss_mem pruss_mem_ids[] = { PRUSS_MEM_DRAM0, PRUSS_MEM_DRAM1,
-					  PRUSS_MEM_SHRD_RAM2 };
+					  PRUSS_MEM_SHRD_RAM2,
+					  PRUSS_MEM_ECAP};
 
 /**
  * struct prueth_private_data - PRU Ethernet private data
@@ -174,6 +176,9 @@ struct prueth_emac {
 	struct port_statistics stats; /* stats holder when i/f is down */
 
 	spinlock_t lock;	/* serialize access */
+
+	u32 rx_int_pacing_offset;
+	unsigned int rx_pacing_timeout;
 };
 
 /**
@@ -334,6 +339,71 @@ static const struct prueth_queue_desc queue_descs[][4] = {
 		{ .rd_ptr = P2_Q4_BD_OFFSET, .wr_ptr = P2_Q4_BD_OFFSET, },
 	}
 };
+
+static int prueth_ecap_initialization(struct prueth_emac *emac,
+				      u32 new_timeout_val,
+				      u32 use_adaptive,
+				      unsigned int *curr_timeout_val)
+{
+	struct prueth *prueth = emac->prueth;
+	void __iomem *ecap = prueth->mem[PRUETH_MEM_ECAP].va;
+	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
+	u8 val = INTR_PAC_DIS_ADP_LGC_DIS;
+
+	/* Not all platform uses ecap. So check and return */
+	if (!ecap)
+		return -ENOTSUPP;
+
+	if (!new_timeout_val) {
+		/* disable pacing */
+		writeb_relaxed(val, sram + emac->rx_int_pacing_offset);
+		emac->rx_pacing_timeout = new_timeout_val;
+		return 0;
+	}
+
+	if (use_adaptive)
+		val = INTR_PAC_ENA_ADP_LGC_ENA;
+	else
+		val = INTR_PAC_ENA_ADP_LGC_DIS;
+
+	if (!*curr_timeout_val) {
+		writew_relaxed(ECAP_ECCTL2_INIT_VAL, ecap + ECAP_ECCTL2);
+		writel_relaxed(ECAP_CAP2_MAX_COUNT, ecap + ECAP_CAP1);
+		writel_relaxed(ECAP_CAP2_MAX_COUNT, ecap + ECAP_CAP2);
+		writeb_relaxed(INTR_PAC_DIS_ADP_LGC_DIS,
+			       sram + emac->rx_int_pacing_offset);
+		if (emac->port_id == PRUETH_PORT_MII0) {
+			writel_relaxed(new_timeout_val *
+				       NSEC_PER_USEC / ECAP_TICK_NSEC,
+				       sram + INTR_PAC_TMR_EXP_OFFSET_PRU0);
+			writel_relaxed(INTR_PAC_PREV_TS_RESET_VAL,
+				       sram + INTR_PAC_PREV_TS_OFFSET_PRU0);
+		}
+		if (emac->port_id == PRUETH_PORT_MII1) {
+			writel_relaxed(new_timeout_val *
+				       NSEC_PER_USEC / ECAP_TICK_NSEC,
+				       sram + INTR_PAC_TMR_EXP_OFFSET_PRU1);
+			writel_relaxed(INTR_PAC_PREV_TS_RESET_VAL,
+				       sram + INTR_PAC_PREV_TS_OFFSET_PRU1);
+		}
+	} else {
+		if (emac->port_id == PRUETH_PORT_MII0) {
+			writel_relaxed(new_timeout_val *
+				       NSEC_PER_USEC / ECAP_TICK_NSEC,
+				       sram + INTR_PAC_TMR_EXP_OFFSET_PRU0);
+		}
+		if (emac->port_id == PRUETH_PORT_MII1) {
+			writel_relaxed(new_timeout_val *
+				       NSEC_PER_USEC / ECAP_TICK_NSEC,
+				       sram + INTR_PAC_TMR_EXP_OFFSET_PRU1);
+		}
+	}
+
+	writeb_relaxed(val, sram + emac->rx_int_pacing_offset);
+	emac->rx_pacing_timeout = new_timeout_val;
+
+	return 0;
+}
 
 static int prueth_hostconfig(struct prueth *prueth)
 {
@@ -1041,6 +1111,20 @@ static int emac_ndo_open(struct net_device *ndev)
 		netdev_err(ndev, "failed to boot PRU: %d\n", ret);
 		goto free_irq;
 	}
+
+	if (emac->port_id == PRUETH_PORT_MII0)
+		emac->rx_int_pacing_offset = INTR_PAC_STATUS_OFFSET_PRU0;
+	else
+		emac->rx_int_pacing_offset = INTR_PAC_STATUS_OFFSET_PRU1;
+
+	/* Configure ecap for interrupt pacing, Don't
+	 * check return value here as this returns
+	 * error only if there is no ecap register address
+	 * which would result in pacing disabled
+	 */
+	prueth_ecap_initialization(emac,
+				   DEFAULT_RX_TIMEOUT_USEC,
+				   0, &emac->rx_pacing_timeout);
 
 	/* start PHY */
 	phy_start(emac->phydev);

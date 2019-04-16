@@ -25,6 +25,7 @@
  */
 struct pruss_private_data {
 	bool has_no_sharedram;
+	bool ecap_used;
 };
 
 /**
@@ -266,7 +267,10 @@ struct pruss_private_data *pruss_get_private_data(struct platform_device *pdev)
 {
 	const struct pruss_match_private_data *data;
 
-	if (!of_device_is_compatible(pdev->dev.of_node, "ti,am4376-pruss"))
+	if (!of_device_is_compatible(pdev->dev.of_node, "ti,am3356-pruss") &&
+	    !of_device_is_compatible(pdev->dev.of_node, "ti,am4376-pruss") &&
+	    !of_device_is_compatible(pdev->dev.of_node, "ti,am5728-pruss") &&
+	    !of_device_is_compatible(pdev->dev.of_node, "ti,k2g-pruss"))
 		return NULL;
 
 	data = of_device_get_match_data(&pdev->dev);
@@ -368,7 +372,8 @@ static int pruss_probe(struct platform_device *pdev)
 	struct resource res;
 	int ret, i, index;
 	const struct pruss_private_data *data;
-	const char *mem_names[PRUSS_MEM_MAX] = { "dram0", "dram1", "shrdram2" };
+	const char *mem_names[PRUSS_MEM_MAX] = { "dram0", "dram1", "shrdram2",
+						 "ecap" };
 	struct regmap_config syscon_config = syscon_regmap_config;
 
 	if (!node) {
@@ -457,6 +462,10 @@ skip_mux:
 		    !strcmp(mem_names[i], "shrdram2"))
 			continue;
 
+		if ((!data || !data->ecap_used) &&
+		    !strcmp(mem_names[i], "ecap"))
+			continue;
+
 		index = of_property_match_string(np, "reg-names", mem_names[i]);
 		if (index < 0) {
 			of_node_put(np);
@@ -510,12 +519,28 @@ static int pruss_remove(struct platform_device *pdev)
 }
 
 /* instance-specific driver private data */
+static const struct pruss_private_data am335x_pruss_priv_data = {
+	.ecap_used = true,
+};
+
+static const struct pruss_match_private_data am335x_match_data[] = {
+	{
+		.device_name	= "4a300000.pruss",
+		.priv_data	= &am335x_pruss_priv_data,
+	},
+	{
+		/* sentinel */
+	},
+};
+
 static const struct pruss_private_data am437x_pruss1_priv_data = {
 	.has_no_sharedram = false,
+	.ecap_used = true,
 };
 
 static const struct pruss_private_data am437x_pruss0_priv_data = {
 	.has_no_sharedram = true,
+	.ecap_used = true,
 };
 
 static const struct pruss_match_private_data am437x_match_data[] = {
@@ -532,11 +557,47 @@ static const struct pruss_match_private_data am437x_match_data[] = {
 	},
 };
 
+static const struct pruss_private_data am57xx_pruss_priv_data = {
+	.ecap_used = true,
+};
+
+static const struct pruss_match_private_data am57xx_match_data[] = {
+	{
+		.device_name	= "4b200000.pruss",
+		.priv_data	= &am57xx_pruss_priv_data,
+	},
+	{
+		.device_name	= "4b280000.pruss",
+		.priv_data	= &am57xx_pruss_priv_data,
+	},
+	{
+		/* sentinel */
+	},
+};
+
+static const struct pruss_private_data k2g_pruss_priv_data = {
+	.ecap_used = true,
+};
+
+static const struct pruss_match_private_data k2g_match_data[] = {
+	{
+		.device_name	= "20a80000.pruss",
+		.priv_data	= &k2g_pruss_priv_data,
+	},
+	{
+		.device_name	= "20ac0000.pruss",
+		.priv_data	= &k2g_pruss_priv_data,
+	},
+	{
+		/* sentinel */
+	},
+};
+
 static const struct of_device_id pruss_of_match[] = {
-	{ .compatible = "ti,am3356-pruss", .data = NULL, },
+	{ .compatible = "ti,am3356-pruss", .data = &am335x_match_data, },
 	{ .compatible = "ti,am4376-pruss", .data = &am437x_match_data, },
-	{ .compatible = "ti,am5728-pruss", .data = NULL, },
-	{ .compatible = "ti,k2g-pruss", .data = NULL, },
+	{ .compatible = "ti,am5728-pruss", .data = &am57xx_match_data, },
+	{ .compatible = "ti,k2g-pruss", .data = &k2g_match_data, },
 	{ .compatible = "ti,am654-icssg", .data = NULL, },
 	{ /* sentinel */ },
 };
