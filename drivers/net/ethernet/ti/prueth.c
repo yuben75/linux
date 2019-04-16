@@ -1453,6 +1453,45 @@ static void emac_get_strings(struct net_device *ndev, u32 stringset, u8 *data)
 	}
 }
 
+static int emac_get_coalesce(struct net_device *ndev,
+			     struct ethtool_coalesce *coal)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
+	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
+	void __iomem *ecap = prueth->mem[PRUETH_MEM_ECAP].va;
+	u32 val;
+
+	if (!ecap)
+		return -EINVAL;
+
+	val = readb_relaxed(sram + emac->rx_int_pacing_offset);
+	coal->use_adaptive_rx_coalesce = (val == INTR_PAC_ENA_ADP_LGC_ENA);
+	coal->rx_coalesce_usecs = emac->rx_pacing_timeout;
+	return 0;
+}
+
+static int emac_set_coalesce(struct net_device *ndev,
+			     struct ethtool_coalesce *coal)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	int ret;
+
+	if (coal->rx_coalesce_usecs  > MAX_RX_TIMEOUT_USEC)
+		return -EOPNOTSUPP;
+
+	/* Start or restart the pacing timer. Also pass rx_pacing_timeout
+	 * separately as it is expected to support pacing for emac firmware
+	 * in which case, driver will store per emac instance timer
+	 */
+	ret = prueth_ecap_initialization(emac,
+					 coal->rx_coalesce_usecs,
+					 coal->use_adaptive_rx_coalesce,
+					 &emac->rx_pacing_timeout);
+
+	return ret;
+}
+
 static void emac_get_ethtool_stats(struct net_device *ndev,
 				   struct ethtool_stats *stats, u64 *data)
 {
@@ -1482,6 +1521,8 @@ static const struct ethtool_ops emac_ethtool_ops = {
 	.get_sset_count = emac_get_sset_count,
 	.get_strings = emac_get_strings,
 	.get_ethtool_stats = emac_get_ethtool_stats,
+	.get_coalesce = emac_get_coalesce,
+	.set_coalesce = emac_set_coalesce,
 };
 
 /* get emac_port corresponding to eth_node name */
