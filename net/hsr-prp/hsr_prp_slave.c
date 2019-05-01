@@ -18,27 +18,50 @@ static rx_handler_result_t handle_frame(struct sk_buff **pskb)
 {
 	struct sk_buff *skb = *pskb;
 	struct hsr_prp_port *port;
-	u16 protocol;
+	struct hsr_prp_priv *priv;
 
-	if (!skb_mac_header_was_set(skb)) {
-		WARN_ONCE(1, "%s: skb invalid", __func__);
-		return RX_HANDLER_PASS;
-	}
+	u16 protocol;
 
 	rcu_read_lock(); /* hsr->node_db, hsr->ports */
 	port = hsr_prp_port_get_rcu(skb->dev);
+	priv = port->priv;
 
-	if (hsr_prp_addr_is_self(port->priv, eth_hdr(skb)->h_source)) {
+	if (!skb_mac_header_was_set(skb)) {
+		WARN_ONCE(1, "%s: skb invalid", __func__);
+		goto finish_pass;
+	}
+
+	if (hsr_prp_addr_is_self(priv, eth_hdr(skb)->h_source)) {
 		/* Directly kill frames sent by ourselves */
 		kfree_skb(skb);
 		goto finish_consume;
 	}
 
+	/* For HSR, non tagged frames are expected, but for PRP
+	 * there could be non tagged frames as well.
+	 */
 	protocol = eth_hdr(skb)->h_proto;
-	if (protocol != htons(ETH_P_PRP) && protocol != htons(ETH_P_HSR))
+	if (protocol != htons(ETH_P_PRP) &&
+	    protocol != htons(ETH_P_HSR) &&
+	    port->priv->prot_version <= HSR_V1)
 		goto finish_pass;
 
-	skb_push(skb, ETH_HLEN);
+	/* Frame is a HSR or PRP frame or frame form a SAN. For
+	 * PRP, only supervisor frame will have a PRP protocol.
+	 */
+	if (protocol == htons(ETH_P_HSR) || protocol == htons(ETH_P_PRP))
+		skb_push(skb, ETH_HLEN);
+
+	/* Not sure why we have to do this as some frames
+	 * don't have the skb->data pointing to mac header for PRP case
+	 */
+	if (skb_mac_header(skb) != skb->data) {
+		skb_push(skb, ETH_HLEN);
+
+		/* do one more check and bail out */
+		if (skb_mac_header(skb) != skb->data)
+			goto finish_consume;
+	}
 
 	hsr_prp_forward_skb(skb, port);
 
