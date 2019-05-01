@@ -146,6 +146,28 @@ static struct sk_buff *frame_get_stripped_skb(struct hsr_prp_frame_info *frame,
 	return skb_clone(frame->skb_std, GFP_ATOMIC);
 }
 
+/* only prp skb should be passed in */
+static void prp_check_lan_id(struct sk_buff *skb, struct hsr_prp_port *port)
+{
+	int lan_id;
+	struct prp_rct *trailor = skb_get_PRP_rct(skb);
+
+	if (!trailor) {
+		INC_CNT_RX_ERROR(port->type, port->priv);
+		return;
+	}
+
+	lan_id = get_prp_lan_id(trailor);
+
+	if (port->type == HSR_PRP_PT_SLAVE_A) {
+		if (lan_id & 1)
+			INC_CNT_RX_WRONG_LAN(port->type, port->priv);
+	} else {
+		if (!(lan_id & 1))
+			INC_CNT_RX_WRONG_LAN(port->type, port->priv);
+	}
+}
+
 static void prp_set_lan_id(struct prp_rct *trailor,
 			   struct hsr_prp_port *port)
 {
@@ -327,6 +349,7 @@ static int slave_xmit(struct sk_buff *skb, struct hsr_prp_port *port,
 		 */
 		ether_addr_copy(eth_hdr(skb)->h_source, port->dev->dev_addr);
 	}
+	INC_CNT_TX(port->type, port->priv);
 	return dev_queue_xmit(skb);
 }
 
@@ -395,7 +418,11 @@ static void hsr_prp_forward_do(struct hsr_prp_frame_info *frame)
 			skb = frame_get_stripped_skb(frame, port);
 
 		if (!skb) {
-			if (frame->port_rcv->type == HSR_PRP_PT_MASTER) {
+			if (frame->port_rcv->type == HSR_PRP_PT_SLAVE_A ||
+			    frame->port_rcv->type ==  HSR_PRP_PT_SLAVE_B)
+				INC_CNT_RX_ERROR(frame->port_rcv->type,
+						 port->priv);
+			else {
 				struct net_device *master_dev =
 				hsr_prp_get_port(port->priv,
 						 HSR_PRP_PT_MASTER)->dev;
@@ -533,7 +560,15 @@ void hsr_prp_forward_skb(struct sk_buff *skb, struct hsr_prp_port *port)
 	    (frame.skb_prp && port->priv->prot_version <= HSR_V1))
 		goto out_drop;
 
+	/* Check for LAN_ID only for PRP */
+	if (frame.skb_prp) {
+		if (port->type == HSR_PRP_PT_SLAVE_A  ||
+		    port->type == HSR_PRP_PT_SLAVE_B)
+			prp_check_lan_id(frame.skb_prp, port);
+	}
+
 	hsr_prp_register_frame_in(frame.node_src, port, frame.sequence_nr);
+
 	hsr_prp_forward_do(&frame);
 	/* Gets called for ingress frames as well as egress from master port.
 	 * So check and increment stats for master port only here.
@@ -552,6 +587,7 @@ void hsr_prp_forward_skb(struct sk_buff *skb, struct hsr_prp_port *port)
 	return;
 
 out_drop:
+	INC_CNT_RX_ERROR(port->type, port->priv);
 	port->dev->stats.tx_dropped++;
 	kfree_skb(skb);
 }

@@ -33,6 +33,7 @@ static rx_handler_result_t handle_frame(struct sk_buff **pskb)
 
 	if (hsr_prp_addr_is_self(priv, eth_hdr(skb)->h_source)) {
 		/* Directly kill frames sent by ourselves */
+		INC_CNT_OWN_RX(port->type, priv);
 		kfree_skb(skb);
 		goto finish_consume;
 	}
@@ -59,10 +60,13 @@ static rx_handler_result_t handle_frame(struct sk_buff **pskb)
 		skb_push(skb, ETH_HLEN);
 
 		/* do one more check and bail out */
-		if (skb_mac_header(skb) != skb->data)
+		if (skb_mac_header(skb) != skb->data) {
+			INC_CNT_RX_ERROR(port->type, priv);
 			goto finish_consume;
+		}
 	}
 
+	INC_CNT_RX(port->type, priv);
 	hsr_prp_forward_skb(skb, port);
 
 finish_consume:
@@ -70,6 +74,7 @@ finish_consume:
 	return RX_HANDLER_CONSUMED;
 
 finish_pass:
+	INC_CNT_RX_ERROR(port->type, priv);
 	rcu_read_unlock(); /* hsr->node_db, hsr->ports */
 	return RX_HANDLER_PASS;
 }

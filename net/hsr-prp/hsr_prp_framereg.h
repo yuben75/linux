@@ -57,6 +57,10 @@ struct hsr_prp_node {
 	unsigned char		macaddress_B[ETH_ALEN];
 	/* Local slave through which AddrB frames are received from this node */
 	enum hsr_prp_port_type	addr_B_port;
+	u32			cnt_received_a;
+	u32			cnt_received_b;
+	u32			cnt_err_wrong_lan_a;
+	u32			cnt_err_wrong_lan_b;
 	unsigned long		time_in[HSR_PRP_PT_PORTS];
 	bool			time_in_stale[HSR_PRP_PT_PORTS];
 	/* if the node is a SAN */
