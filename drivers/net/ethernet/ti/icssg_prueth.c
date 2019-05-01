@@ -1437,6 +1437,9 @@ static int emac_set_ts_config(struct net_device *ndev, struct ifreq *ifr)
 	struct hwtstamp_config config;
 	int ret;
 
+	if (emac->prueth->dual_icssg)
+		return -ENODEV;
+
 	if (copy_from_user(&config, ifr->ifr_data, sizeof(config)))
 		return -EFAULT;
 
@@ -1456,6 +1459,9 @@ static int emac_get_ts_config(struct net_device *ndev, struct ifreq *ifr)
 {
 	struct prueth_emac *emac = netdev_priv(ndev);
 	struct hwtstamp_config *config = &emac->tstamp_config;
+
+	if (emac->prueth->dual_icssg)
+		return -ENODEV;
 
 	return copy_to_user(ifr->ifr_data, config, sizeof(*config)) ?
 			    -EFAULT : 0;
@@ -1519,7 +1525,7 @@ static int prueth_netdev_init(struct prueth *prueth,
 	const u8 *mac_addr;
 	int ret;
 	u32 refclk_freq;
-	struct regmap *iep_map;
+	struct regmap *iep_map = NULL;
 
 	port = prueth_node_port(eth_node);
 	if (port < 0)
@@ -1534,12 +1540,14 @@ static int prueth_netdev_init(struct prueth *prueth,
 		return -ENOMEM;
 
 	emac = netdev_priv(ndev);
-	iep_map = syscon_regmap_lookup_by_phandle(eth_node, "iep");
-	if (IS_ERR(iep_map)) {
-		ret = PTR_ERR(iep_map);
-		if (ret != -EPROBE_DEFER)
-			dev_err(prueth->dev, "couldn't get iep regmap\n");
-		goto free;
+	if (!prueth->dual_icssg) {
+		iep_map = syscon_regmap_lookup_by_phandle(eth_node, "iep");
+		if (IS_ERR(iep_map)) {
+			ret = PTR_ERR(iep_map);
+			if (ret != -EPROBE_DEFER)
+				dev_err(prueth->dev, "couldn't get iep regmap\n");
+			goto free;
+		}
 	}
 
 	/* Firmware sets IEP clock to Vbus clk (250MHz) using internal mux.
@@ -1623,9 +1631,12 @@ static int prueth_netdev_init(struct prueth *prueth,
 	ndev->netdev_ops = &emac_netdev_ops;
 	ndev->ethtool_ops = &icssg_ethtool_ops;
 
-	ret = icssg_iep_init(&emac->iep, prueth->dev, iep_map, refclk_freq);
-	if (ret)
-		goto free;
+	if (iep_map) {
+		ret = icssg_iep_init(&emac->iep, prueth->dev, iep_map,
+				     refclk_freq);
+		if (ret)
+			goto free;
+	}
 
 	netif_tx_napi_add(ndev, &emac->napi_tx,
 			  emac_napi_tx_poll, NAPI_POLL_WEIGHT);
@@ -1662,7 +1673,8 @@ static void prueth_netdev_exit(struct prueth *prueth,
 
 	netif_napi_del(&emac->napi_rx);
 	netif_napi_del(&emac->napi_tx);
-	icssg_iep_exit(&emac->iep);
+	if (!prueth->dual_icssg)
+		icssg_iep_exit(&emac->iep);
 	free_netdev(emac->ndev);
 	prueth->emac[mac] = NULL;
 }
