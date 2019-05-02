@@ -8,8 +8,14 @@
 #ifndef __NET_TI_PRUETH_H
 #define __NET_TI_PRUETH_H
 
+#include <linux/kobject.h>
+#include <linux/hrtimer.h>
+#include <linux/kthread.h>
 #include <linux/pruss.h>
 #include <linux/if_ether.h>
+#ifdef CONFIG_PREEMPT_RT_FULL
+#include <linux/swork.h>
+#endif
 #include "icss_switch.h"
 
 #define PRUETH_NUMQUEUES	5
@@ -212,6 +218,16 @@ struct port_statistics {
 	u32 sqe_test_error;
 } __packed;
 
+#define MS_TO_NS(msec)		((msec) * 1000 * 1000)
+/* NSP (Network Storm Prevention) timer re-uses NT timer */
+#define PRUETH_DEFAULT_NSP_TIMER_MS	100
+#define PRUETH_DEFAULT_NSP_TIMER_COUNT	\
+		(PRUETH_DEFAULT_NSP_TIMER_MS / 10)
+#define PRUETH_NSP_CREDIT_SHIFT       8
+#define PRUETH_NSP_ENABLE             1
+#define PRUETH_NSP_DISABLE            0
+#define PRUETH_NSP_EN_MASK            0xff
+
 /* In switch mode there are 3 real ports i.e. 3 mac addrs.
  * however Linux sees only the host side port. The other 2 ports
  * are the switch ports.
@@ -311,6 +327,12 @@ struct prueth_emac {
 	struct port_statistics stats; /* stats holder when i/f is down */
 
 	spinlock_t lock;	/* serialize access */
+	unsigned int nsp_timer_count;
+	unsigned int nsp_credit;
+	struct kobject kobj;
+#ifdef CONFIG_SYSFS
+	struct device_attribute nsp_credit_attr;
+#endif
 
 	u32 rx_int_pacing_offset;
 	unsigned int rx_pacing_timeout;
@@ -345,6 +367,21 @@ struct prueth {
 	struct prueth_emac *emac[PRUETH_NUM_MACS];
 	struct net_device *registered_netdevs[PRUETH_NUM_MACS];
 	int pruss_id;
+	unsigned int emac_configured;
+	unsigned int tbl_check_period;
+	struct hrtimer tbl_check_timer;
 };
 
+#ifdef CONFIG_SYSFS
+int prueth_sysfs_init(struct prueth_emac *emac);
+void prueth_remove_sysfs_entries(struct prueth_emac *emac);
+#else
+static inline int prueth_sysfs_init(struct prueth_emac *emac)
+{
+	return 0;
+}
+
+static inline void prueth_remove_sysfs_entries(struct prueth_emac *emac)
+{}
+#endif
 #endif /* __NET_TI_PRUETH_H */

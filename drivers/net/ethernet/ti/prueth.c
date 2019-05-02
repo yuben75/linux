@@ -448,6 +448,65 @@ static int prueth_emac_config(struct prueth_emac *emac)
 	return 0;
 }
 
+/* Handles storm prevention */
+static enum hrtimer_restart prueth_timer(struct hrtimer *timer)
+{
+	struct prueth *prueth = container_of(timer, struct prueth,
+					     tbl_check_timer);
+	void __iomem *dram;
+	struct prueth_emac *emac;
+	enum prueth_mac mac;
+
+	hrtimer_forward_now(timer, ktime_set(0, prueth->tbl_check_period));
+	if (prueth->emac_configured !=
+		(BIT(PRUETH_PORT_MII0) | BIT(PRUETH_PORT_MII1)))
+		return HRTIMER_RESTART;
+
+	for (mac = PRUETH_MAC0; mac <= PRUETH_MAC1; mac++) {
+		emac = prueth->emac[mac];
+		if (emac->port_id == PRUETH_PORT_MII0)
+			dram = prueth->mem[PRUETH_MEM_DRAM0].va;
+		else
+			dram = prueth->mem[PRUETH_MEM_DRAM1].va;
+
+		if ((prueth->emac_configured & BIT(emac->port_id)) &&
+		    (emac->nsp_credit & PRUETH_NSP_EN_MASK)) {
+			if (!--emac->nsp_timer_count) {
+				writel(emac->nsp_credit,
+				       dram + STORM_PREVENTION_OFFSET);
+				emac->nsp_timer_count =
+				       PRUETH_DEFAULT_NSP_TIMER_COUNT;
+			}
+		}
+	}
+
+	return HRTIMER_RESTART;
+}
+
+static int prueth_init_timer(struct prueth *prueth)
+{
+	if (prueth->emac_configured)
+		return 0;
+
+	hrtimer_init(&prueth->tbl_check_timer, CLOCK_MONOTONIC,
+		     HRTIMER_MODE_REL);
+	prueth->tbl_check_period = MS_TO_NS(10);
+	prueth->tbl_check_timer.function = prueth_timer;
+
+	return 0;
+}
+
+static int prueth_start_timer(struct prueth *prueth)
+{
+	if (prueth->emac_configured)
+		return 0;
+
+	hrtimer_start(&prueth->tbl_check_timer,
+		      ktime_set(0, prueth->tbl_check_period),
+		      HRTIMER_MODE_REL);
+	return 0;
+}
+
 /* update phy/port status information for firmware */
 static void emac_update_phystatus(struct prueth_emac *emac)
 {
@@ -942,6 +1001,7 @@ static int emac_napi_poll(struct napi_struct *napi, int budget)
 static int emac_ndo_open(struct net_device *ndev)
 {
 	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
 	int ret;
 
 	ret = request_irq(emac->rx_irq, emac_rx_hardirq,
@@ -967,8 +1027,14 @@ static int emac_ndo_open(struct net_device *ndev)
 	/* reset and start PRU firmware */
 	prueth_emac_config(emac);
 
+	prueth_init_timer(prueth);
+
 	/* restore stats */
 	emac_set_stats(emac, &emac->stats);
+
+	/* initialized Network Storm Prevention timer count */
+	emac->nsp_timer_count = PRUETH_DEFAULT_NSP_TIMER_COUNT;
+	prueth_start_timer(prueth);
 
 	/* boot the PRU */
 	ret = rproc_boot(emac->pru);
@@ -990,6 +1056,8 @@ static int emac_ndo_open(struct net_device *ndev)
 	prueth_ecap_initialization(emac,
 				   DEFAULT_RX_TIMEOUT_USEC,
 				   0, &emac->rx_pacing_timeout);
+
+	prueth->emac_configured |= BIT(emac->port_id);
 
 	/* start PHY */
 	phy_start(emac->phydev);
@@ -1020,9 +1088,12 @@ free_rx_irq:
 static int emac_ndo_stop(struct net_device *ndev)
 {
 	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
 
 	/* disable the mac port */
 	prueth_port_enable(emac, 0);
+
+	prueth->emac_configured &= ~BIT(emac->port_id);
 
 	/* stop PHY */
 	phy_stop(emac->phydev);
@@ -1041,6 +1112,8 @@ static int emac_ndo_stop(struct net_device *ndev)
 	/* free rx and tx interrupts */
 	free_irq(emac->tx_irq, ndev);
 	free_irq(emac->rx_irq, ndev);
+
+	hrtimer_cancel(&prueth->tbl_check_timer);
 
 	if (netif_msg_drv(emac))
 		dev_notice(&ndev->dev, "stopped\n");
@@ -1731,7 +1804,7 @@ static int prueth_probe(struct platform_device *pdev)
 			dev_err(dev, "can't register netdev for port MII0");
 			goto netdev_exit;
 		}
-
+		prueth_sysfs_init(prueth->emac[PRUETH_MAC0]);
 		prueth->registered_netdevs[PRUETH_MAC0] = prueth->emac[PRUETH_MAC0]->ndev;
 	}
 
@@ -1741,7 +1814,7 @@ static int prueth_probe(struct platform_device *pdev)
 			dev_err(dev, "can't register netdev for port MII1");
 			goto netdev_unregister;
 		}
-
+		prueth_sysfs_init(prueth->emac[PRUETH_MAC1]);
 		prueth->registered_netdevs[PRUETH_MAC1] = prueth->emac[PRUETH_MAC1]->ndev;
 	}
 
@@ -1800,6 +1873,8 @@ static int prueth_remove(struct platform_device *pdev)
 	struct prueth *prueth = platform_get_drvdata(pdev);
 	int i;
 
+	prueth_remove_sysfs_entries(prueth->emac[PRUETH_MAC0]);
+	prueth_remove_sysfs_entries(prueth->emac[PRUETH_MAC1]);
 	for (i = 0; i < PRUETH_NUM_MACS; i++) {
 		if (!prueth->registered_netdevs[i])
 			continue;
