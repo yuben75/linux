@@ -218,6 +218,13 @@ struct port_statistics {
 	u32 sqe_test_error;
 } __packed;
 
+enum pruss_device {
+	PRUSS_AM57XX = 0,
+	PRUSS_AM4376,
+	PRUSS_AM3359,
+	PRUSS_K2G
+};
+
 #define MS_TO_NS(msec)		((msec) * 1000 * 1000)
 /* NSP (Network Storm Prevention) timer re-uses NT timer */
 #define PRUETH_DEFAULT_NSP_TIMER_MS	100
@@ -284,12 +291,25 @@ enum prueth_mem {
 	PRUETH_MEM_MAX,
 };
 
+enum fw_revision {
+	FW_REV_V1_0 = 0,
+	FW_REV_V2_1
+};
+
+/* Firmware offsets/size information */
+struct prueth_fw_offsets {
+	u32 vlan_ctrl_byte;
+	u32 vlan_filter_tbl;
+};
+
 /**
  * struct prueth_private_data - PRU Ethernet private data
  * @fw_names: firmware names to be used for PRUSS ethernet usecases
  */
 struct prueth_private_data {
+	enum pruss_device driver_data;
 	const char *fw_names[PRUSS_NUM_PRUS];
+	enum fw_revision fw_rev;
 };
 
 /* data for each emac port */
@@ -327,6 +347,7 @@ struct prueth_emac {
 	struct port_statistics stats; /* stats holder when i/f is down */
 
 	spinlock_t lock;	/* serialize access */
+	spinlock_t addr_lock;
 	unsigned int nsp_timer_count;
 	unsigned int nsp_credit;
 	struct kobject kobj;
@@ -352,6 +373,7 @@ struct prueth_emac {
  * @eth_node: node for each emac node
  * @emac: emac data for three ports, one host and two physical
  * @registered_netdevs: net device for each registered emac
+ * @fw_data: firmware names to be used with PRU remoteprocs
  * @pruss_id: PRUSS instance id
  */
 struct prueth {
@@ -367,6 +389,8 @@ struct prueth {
 	struct prueth_emac *emac[PRUETH_NUM_MACS];
 	struct net_device *registered_netdevs[PRUETH_NUM_MACS];
 	int pruss_id;
+	const struct prueth_private_data *fw_data;
+	struct prueth_fw_offsets *fw_offsets;
 	unsigned int emac_configured;
 	unsigned int tbl_check_period;
 	struct hrtimer tbl_check_timer;

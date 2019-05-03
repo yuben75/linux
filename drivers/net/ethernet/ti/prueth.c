@@ -36,6 +36,16 @@ static enum pruss_mem pruss_mem_ids[] = { PRUSS_MEM_DRAM0, PRUSS_MEM_DRAM1,
 					  PRUSS_MEM_SHRD_RAM2,
 					  PRUSS_MEM_ECAP};
 
+struct prueth_fw_offsets fw_offsets_v1_0 = {
+	.vlan_ctrl_byte = 0,
+	.vlan_filter_tbl = 0
+};
+
+struct prueth_fw_offsets fw_offsets_v2_1 = {
+	.vlan_ctrl_byte = 0,
+	.vlan_filter_tbl = 0
+};
+
 #define OCMC_RAM_SIZE		(SZ_64K - SZ_8K)
 
 /* TX Minimum Inter packet gap */
@@ -1024,6 +1034,12 @@ static int emac_ndo_open(struct net_device *ndev)
 
 	netif_carrier_off(ndev);
 
+	/* Set VLAN filter table offsets */
+	prueth->fw_offsets->vlan_ctrl_byte  =
+		ICSS_EMAC_FW_VLAN_FILTER_CTRL_BITMAP_OFFSET;
+	prueth->fw_offsets->vlan_filter_tbl =
+		ICSS_EMAC_FW_VLAN_FLTR_TBL_BASE_ADDR;
+
 	/* reset and start PRU firmware */
 	prueth_emac_config(emac);
 
@@ -1089,6 +1105,7 @@ static int emac_ndo_stop(struct net_device *ndev)
 {
 	struct prueth_emac *emac = netdev_priv(ndev);
 	struct prueth *prueth = emac->prueth;
+	void __iomem *ram = prueth->mem[emac->dram].va;
 
 	/* disable the mac port */
 	prueth_port_enable(emac, 0);
@@ -1114,6 +1131,8 @@ static int emac_ndo_stop(struct net_device *ndev)
 	free_irq(emac->rx_irq, ndev);
 
 	hrtimer_cancel(&prueth->tbl_check_timer);
+	/* Disable VLAN filter */
+	writeb(VLAN_FLTR_DIS, ram + prueth->fw_offsets->vlan_ctrl_byte);
 
 	if (netif_msg_drv(emac))
 		dev_notice(&ndev->dev, "stopped\n");
@@ -1252,6 +1271,66 @@ static void emac_ndo_set_rx_mode(struct net_device *ndev)
 	writel(reg, sram + EMAC_PROMISCUOUS_MODE_OFFSET);
 }
 
+static int emac_add_del_vid(struct prueth_emac *emac,
+			    bool add, __be16 proto, u16 vid)
+{
+	struct prueth *prueth = emac->prueth;
+	void __iomem *ram;
+	u16 index = ((vid >> 3) & 0x1ff);
+	unsigned long flags;
+	u8 val;
+	u32 vlan_ctrl_byte = prueth->fw_offsets->vlan_ctrl_byte;
+	u32 vlan_filter_tbl = prueth->fw_offsets->vlan_filter_tbl;
+
+	ram = (emac->port_id == PRUETH_PORT_MII0) ?
+			prueth->mem[PRUETH_MEM_DRAM0].va :
+			prueth->mem[PRUETH_MEM_DRAM1].va;
+
+	if (proto != htons(ETH_P_8021Q))
+		return -EINVAL;
+
+	if (vid >= VLAN_VID_MAX)
+		return -EINVAL;
+
+	/* VLAN filter table is 512 bytes wide. Index it using
+	 * vid / 8 and then set/reset the bit using vid & 0x7
+	 */
+	spin_lock_irqsave(&emac->addr_lock, flags);
+	/* By default enable priority tagged frames to host below by
+	 * resetting bit 1 in the VLAN_FLTR_CTRL_BYTE. So vid 0 need
+	 * not be added to the table.
+	 */
+	if (vid) {
+		val = readb(ram + vlan_filter_tbl + index);
+		if (add)
+			val |= BIT(vid & 7);
+		else
+			val &= ~BIT(vid & 7);
+		writeb(val, ram + vlan_filter_tbl + index);
+	}
+
+	writeb(VLAN_FLTR_ENA, ram + vlan_ctrl_byte);
+	spin_unlock_irqrestore(&emac->addr_lock, flags);
+
+	return 0;
+}
+
+static int emac_ndo_vlan_rx_add_vid(struct net_device *dev,
+				    __be16 proto, u16 vid)
+{
+	struct prueth_emac *emac = netdev_priv(dev);
+
+	return emac_add_del_vid(emac, true, proto, vid);
+}
+
+static int emac_ndo_vlan_rx_kill_vid(struct net_device *dev,
+				     __be16 proto, u16 vid)
+{
+	struct prueth_emac *emac = netdev_priv(dev);
+
+	return emac_add_del_vid(emac, false, proto, vid);
+}
+
 static const struct net_device_ops emac_netdev_ops = {
 	.ndo_open = emac_ndo_open,
 	.ndo_stop = emac_ndo_stop,
@@ -1262,6 +1341,8 @@ static const struct net_device_ops emac_netdev_ops = {
 	.ndo_tx_timeout = emac_ndo_tx_timeout,
 	.ndo_get_stats = emac_ndo_get_stats,
 	.ndo_set_rx_mode = emac_ndo_set_rx_mode,
+	.ndo_vlan_rx_add_vid = emac_ndo_vlan_rx_add_vid,
+	.ndo_vlan_rx_kill_vid = emac_ndo_vlan_rx_kill_vid,
 };
 
 /**
@@ -1592,6 +1673,9 @@ static int prueth_netdev_init(struct prueth *prueth,
 		goto free;
 	}
 
+	ndev->features |= NETIF_F_HW_VLAN_CTAG_FILTER;
+	ndev->hw_features = ndev->features;
+
 	ndev->netdev_ops = &emac_netdev_ops;
 	ndev->ethtool_ops = &emac_ethtool_ops;
 
@@ -1653,6 +1737,12 @@ static int prueth_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, prueth);
 
 	prueth->dev = dev;
+	prueth->fw_data = match->data;
+
+	if (prueth->fw_data->fw_rev == FW_REV_V1_0)
+		prueth->fw_offsets = &fw_offsets_v1_0;
+	else
+		prueth->fw_offsets = &fw_offsets_v2_1;
 
 	eth0_node = of_get_child_by_name(np, "ethernet-mii0");
 	if (!of_device_is_available(eth0_node)) {
@@ -1966,11 +2056,35 @@ static const struct dev_pm_ops prueth_dev_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(prueth_suspend, prueth_resume)
 };
 
+/* AM33xx SoC-specific firmware data */
+static struct prueth_private_data am335x_prueth_pdata = {
+	.driver_data = PRUSS_AM3359,
+	.fw_rev = FW_REV_V1_0
+};
+
+/* AM437x SoC-specific firmware data */
+static struct prueth_private_data am437x_prueth_pdata = {
+	.driver_data = PRUSS_AM4376,
+	.fw_rev = FW_REV_V1_0
+};
+
+/* AM57xx SoC-specific firmware data */
+static struct prueth_private_data am57xx_prueth_pdata = {
+	.driver_data = PRUSS_AM57XX,
+	.fw_rev = FW_REV_V2_1
+};
+
+/* 66AK2G SoC-specific firmware data */
+static struct prueth_private_data k2g_prueth_pdata = {
+	.driver_data = PRUSS_K2G,
+	.fw_rev = FW_REV_V2_1
+};
+
 static const struct of_device_id prueth_dt_match[] = {
-	{ .compatible = "ti,am57-prueth", },
-	{ .compatible = "ti,am4376-prueth", },
-	{ .compatible = "ti,am3359-prueth", },
-	{ .compatible = "ti,k2g-prueth", },
+	{ .compatible = "ti,am57-prueth", .data = &am57xx_prueth_pdata, },
+	{ .compatible = "ti,am4376-prueth", .data = &am437x_prueth_pdata, },
+	{ .compatible = "ti,am3359-prueth", .data = &am335x_prueth_pdata, },
+	{ .compatible = "ti,k2g-prueth", .data = &k2g_prueth_pdata, },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, prueth_dt_match);
