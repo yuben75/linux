@@ -17,6 +17,7 @@
 #include "hsr_prp_main.h"
 #include "hsr_prp_framereg.h"
 #include "hsr_netlink.h"
+#include "prp_netlink.h"
 
 /*	TODO: use hash lists for mac addresses (linux/jhash.h)?    */
 
@@ -406,8 +407,11 @@ void hsr_prp_prune_nodes(struct timer_list *t)
 
 		/* Prune old entries */
 		if (time_is_before_jiffies(timestamp +
-				msecs_to_jiffies(HSR_PRP_NODE_FORGET_TIME))) {
-			hsr_nl_nodedown(priv, node->macaddress_A);
+		    msecs_to_jiffies(HSR_PRP_NODE_FORGET_TIME))) {
+			if (priv->prot_version <= HSR_V1)
+				hsr_nl_nodedown(priv, node->macaddress_A);
+			else
+				prp_nl_nodedown(priv, node->macaddress_A);
 			list_del_rcu(&node->mac_list);
 			/* Note that we need to free this entry later: */
 			kfree_rcu(node, rcu_head);
