@@ -176,6 +176,47 @@
 #define VLAN_VID_MIN                                 0x0
 #define VLAN_VID_MAX                                 0x0FFF
 
+/* Multicast Filtering Offsets */
+/* Size requirements for Multicast filtering feature */
+#define ICSS_EMAC_FW_MULTICAST_TABLE_SIZE_BYTES                        256
+#define ICSS_EMAC_FW_MULTICAST_FILTER_MASK_SIZE_BYTES                    6
+#define ICSS_EMAC_FW_MULTICAST_FILTER_CTRL_SIZE_BYTES                    1
+#define ICSS_EMAC_FW_MULTICAST_FILTER_MASK_OVERRIDE_STATUS_SIZE_BYTES    1
+#define ICSS_EMAC_FW_MULTICAST_FILTER_DROP_CNT_SIZE_BYTES                4
+/* 6 bytes HASH Mask for the MAC */
+#define ICSS_EMAC_FW_MULTICAST_FILTER_MASK_OFFSET         0xF4
+/* 0 -> multicast filtering disabled | 1 -> multicast filtering enabled */
+#define ICSS_EMAC_FW_MULTICAST_FILTER_CTRL_OFFSET \
+	(ICSS_EMAC_FW_MULTICAST_FILTER_MASK_OFFSET + \
+	 ICSS_EMAC_FW_MULTICAST_FILTER_MASK_SIZE_BYTES)
+/* Status indicating if the HASH override is done or not: 0: no, 1: yes */
+#define ICSS_EMAC_FW_MULTICAST_FILTER_OVERRIDE_STATUS \
+	(ICSS_EMAC_FW_MULTICAST_FILTER_CTRL_OFFSET + \
+	 ICSS_EMAC_FW_MULTICAST_FILTER_CTRL_SIZE_BYTES)
+/* Multicast drop statistics */
+#define ICSS_EMAC_FW_MULTICAST_FILTER_DROP_CNT_OFFSET \
+	(ICSS_EMAC_FW_MULTICAST_FILTER_OVERRIDE_STATUS + \
+	 ICSS_EMAC_FW_MULTICAST_FILTER_MASK_OVERRIDE_STATUS_SIZE_BYTES)
+/* Multicast table */
+#define ICSS_EMAC_FW_MULTICAST_FILTER_TABLE \
+	(ICSS_EMAC_FW_MULTICAST_FILTER_DROP_CNT_OFFSET + \
+	 ICSS_EMAC_FW_MULTICAST_FILTER_DROP_CNT_SIZE_BYTES)
+
+/* Multicast filter defines & offsets
+ */
+#define M_MULTICAST_TABLE_SEARCH_OP_CONTROL_BIT         0xE0
+/* one byte field :
+ * 0 -> multicast filtering disabled
+ * 1 -> multicast filtering enabled
+ */
+#define MULTICAST_FILTER_DISABLED                       0x00
+#define MULTICAST_FILTER_ENABLED                        0x01
+#define MULTICAST_FILTER_MASK                           0xE4
+#define MULTICAST_FILTER_TABLE                          0x100
+#define MULTICAST_TABLE_SIZE                            256
+#define MULTICAST_FILTER_HOST_RCV_ALLOWED               0x01
+#define MULTICAST_FILTER_HOST_RCV_NOT_ALLOWED           0x00
+
 /* Shared RAM offsets for EMAC */
 
 /* Queue Descriptors */

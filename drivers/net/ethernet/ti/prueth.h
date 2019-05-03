@@ -225,6 +225,10 @@ enum pruss_device {
 	PRUSS_K2G
 };
 
+#define PRUSS0 0
+#define PRUSS1 1
+#define PRUSS2 2
+
 #define MS_TO_NS(msec)		((msec) * 1000 * 1000)
 /* NSP (Network Storm Prevention) timer re-uses NT timer */
 #define PRUETH_DEFAULT_NSP_TIMER_MS	100
@@ -300,6 +304,9 @@ enum fw_revision {
 struct prueth_fw_offsets {
 	u32 vlan_ctrl_byte;
 	u32 vlan_filter_tbl;
+	u32 mc_ctrl_byte;
+	u32 mc_filter_mask;
+	u32 mc_filter_tbl;
 };
 
 /**
@@ -350,6 +357,7 @@ struct prueth_emac {
 	spinlock_t addr_lock;
 	unsigned int nsp_timer_count;
 	unsigned int nsp_credit;
+	unsigned char mc_mac_mask[ETH_ALEN];
 	struct kobject kobj;
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *root_dir;
