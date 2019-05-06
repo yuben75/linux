@@ -852,22 +852,6 @@ enum {
 
 #define IFLA_IPOIB_MAX (__IFLA_IPOIB_MAX - 1)
 
-
-/* HSR section */
-
-enum {
-	IFLA_HSR_UNSPEC,
-	IFLA_HSR_SLAVE1,
-	IFLA_HSR_SLAVE2,
-	IFLA_HSR_MULTICAST_SPEC,	/* Last byte of supervision addr */
-	IFLA_HSR_SUPERVISION_ADDR,	/* Supervision frame multicast addr */
-	IFLA_HSR_SEQ_NR,
-	IFLA_HSR_VERSION,		/* HSR version */
-	__IFLA_HSR_MAX,
-};
-
-#define IFLA_HSR_MAX (__IFLA_HSR_MAX - 1)
-
 /* STATS section */
 
 struct if_stats_msg {
@@ -999,18 +983,17 @@ struct ifla_rmnet_flags {
 	__u32	mask;
 };
 
-/* PRP section */
-
 enum {
-	IFLA_PRP_UNSPEC,
-	IFLA_PRP_SLAVE1,
-	IFLA_PRP_SLAVE2,
-	IFLA_PRP_MULTICAST_SPEC,        /* Last byte of supervision addr */
-	IFLA_PRP_SUPERVISION_ADDR,      /* Supervision frame multicast addr */
-	IFLA_PRP_SEQ_NR,
-	__IFLA_PRP_MAX,
+	IFLA_HSR_PRP_UNSPEC,
+	IFLA_HSR_PRP_SLAVE1,
+	IFLA_HSR_PRP_SLAVE2,
+	IFLA_HSR_PRP_SF_MC_ADDR_LSB,  /* Last byte of supervision addr */
+	IFLA_HSR_PRP_SF_MC_ADDR,      /* Supervision frame multicast addr */
+	IFLA_HSR_PRP_SEQ_NR,
+	IFLA_HSR_VERSION,		/* HSR version */
+	__IFLA_HSR_PRP_MAX,
 };
 
-#define IFLA_PRP_MAX (__IFLA_PRP_MAX - 1)
+#define IFLA_HSR_PRP_MAX (__IFLA_HSR_PRP_MAX - 1)
 
 #endif /* _UAPI_LINUX_IF_LINK_H */

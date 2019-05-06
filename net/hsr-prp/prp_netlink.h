@@ -14,7 +14,7 @@
 
 #include <linux/if_ether.h>
 #include <linux/module.h>
-#include <uapi/linux/prp_netlink.h>
+#include <uapi/linux/hsr_prp_netlink.h>
 
 struct hsr_prp_priv;
 struct hsr_prp_port;
