@@ -134,13 +134,16 @@ static int hsr_prp_dev_change_mtu(struct net_device *dev, int new_mtu)
 {
 	struct hsr_prp_priv *priv;
 	struct hsr_prp_port *master;
+	int max;
 
 	priv = netdev_priv(dev);
 	master = hsr_prp_get_port(priv, HSR_PRP_PT_MASTER);
 
-	if (new_mtu > hsr_prp_get_max_mtu(priv)) {
-		netdev_info(master->dev, "A HSR/PRP master's MTU cannot be greater than the smallest MTU of its slaves minus the HSR Tag length (%d octets).\n",
-			    HSR_PRP_HLEN);
+	max = hsr_prp_get_max_mtu(priv);
+	if (new_mtu > max) {
+		netdev_info(master->dev,
+			    "HSR/PRP: Invalid MTU, expected (<= %d), Got %d.\n",
+			    max, new_mtu);
 		return -EINVAL;
 	}
 
@@ -173,7 +176,8 @@ static int hsr_prp_dev_open(struct net_device *dev)
 			designation = '?';
 		}
 		if (!is_slave_up(port->dev))
-			netdev_warn(dev, "Slave %c (%s) is not up; please bring it up to get a fully working HSR/PRP network\n",
+			netdev_warn(dev,
+				    "HSR/PRP: Please bringup Slave %c (%s)\n",
 				    designation, port->dev->name);
 	}
 	rcu_read_unlock();
@@ -326,7 +330,7 @@ static void hsr_prp_announce(struct timer_list *t)
 	rcu_read_lock();
 	master = hsr_prp_get_port(priv, HSR_PRP_PT_MASTER);
 
-	if (priv->announce_count < 3 && priv->prot_version == 0) {
+	if (priv->announce_count < 3 && priv->prot_version == HSR_V0) {
 		send_supervision_frame(master, HSR_TLV_ANNOUNCE,
 				       priv->prot_version);
 		priv->announce_count++;
@@ -348,12 +352,12 @@ static void hsr_prp_announce(struct timer_list *t)
 /* According to comments in the declaration of struct net_device, this function
  * is "Called from unregister, can be used to call free_netdev". Ok then...
  */
-static void hsr_prp_dev_destroy(struct net_device *hsr_dev)
+static void hsr_prp_dev_destroy(struct net_device *ndev)
 {
 	struct hsr_prp_priv *priv;
 	struct hsr_prp_port *port;
 
-	priv = netdev_priv(hsr_dev);
+	priv = netdev_priv(ndev);
 
 	hsr_prp_debugfs_term(priv);
 
@@ -376,11 +380,7 @@ static const struct net_device_ops hsr_prp_device_ops = {
 	.ndo_fix_features = hsr_prp_fix_features,
 };
 
-static struct device_type hsr_type = {
-	.name = "hsr",
-};
-
-void hsr_prp_dev_setup(struct net_device *dev)
+static void hsr_prp_dev_setup(struct net_device *dev, struct device_type *type)
 {
 	eth_hw_addr_random(dev);
 
@@ -388,7 +388,7 @@ void hsr_prp_dev_setup(struct net_device *dev)
 	dev->min_mtu = 0;
 	dev->header_ops = &hsr_prp_header_ops;
 	dev->netdev_ops = &hsr_prp_device_ops;
-	SET_NETDEV_DEVTYPE(dev, &hsr_type);
+	SET_NETDEV_DEVTYPE(dev, type);
 	dev->priv_flags |= IFF_NO_QUEUE;
 
 	dev->needs_free_netdev = true;
@@ -412,6 +412,24 @@ void hsr_prp_dev_setup(struct net_device *dev)
 	dev->features |= NETIF_F_NETNS_LOCAL;
 }
 
+static struct device_type hsr_type = {
+	.name = "hsr",
+};
+
+void hsr_dev_setup(struct net_device *dev)
+{
+	hsr_prp_dev_setup(dev, &hsr_type);
+}
+
+static struct device_type prp_type = {
+	.name = "prp",
+};
+
+void prp_dev_setup(struct net_device *dev)
+{
+	hsr_prp_dev_setup(dev, &prp_type);
+}
+
 /* Return true if dev is a HSR master; return false otherwise.
  */
 inline bool is_hsr_prp_master(struct net_device *dev)
@@ -424,7 +442,7 @@ static const unsigned char def_multicast_addr[ETH_ALEN] __aligned(2) = {
 	0x01, 0x15, 0x4e, 0x00, 0x01, 0x00
 };
 
-int hsr_prp_dev_finalize(struct net_device *hsr_dev,
+int hsr_prp_dev_finalize(struct net_device *hsr_prp_dev,
 			 struct net_device *slave[2],
 			 unsigned char multicast_spec, u8 protocol_version)
 {
@@ -432,18 +450,25 @@ int hsr_prp_dev_finalize(struct net_device *hsr_dev,
 	struct hsr_prp_port *port;
 	int res;
 
-	priv = netdev_priv(hsr_dev);
+	/* PRP not supported yet */
+	if (protocol_version == PRP_V1)
+		return -EPROTONOSUPPORT;
+
+	priv = netdev_priv(hsr_prp_dev);
 	INIT_LIST_HEAD(&priv->ports);
 	INIT_LIST_HEAD(&priv->node_db);
 	INIT_LIST_HEAD(&priv->self_node_db);
 
-	ether_addr_copy(hsr_dev->dev_addr, slave[0]->dev_addr);
+	ether_addr_copy(hsr_prp_dev->dev_addr, slave[0]->dev_addr);
 
 	/* Make sure we recognize frames from ourselves in hsr_rcv() */
-	res = hsr_prp_create_self_node(&priv->self_node_db, hsr_dev->dev_addr,
+	res = hsr_prp_create_self_node(&priv->self_node_db,
+				       hsr_prp_dev->dev_addr,
 				       slave[1]->dev_addr);
 	if (res < 0)
 		return res;
+
+	priv->prot_version = protocol_version;
 
 	spin_lock_init(&priv->seqnr_lock);
 	/* Overflow soon to find bugs easier: */
@@ -456,26 +481,24 @@ int hsr_prp_dev_finalize(struct net_device *hsr_dev,
 	ether_addr_copy(priv->sup_multicast_addr, def_multicast_addr);
 	priv->sup_multicast_addr[ETH_ALEN - 1] = multicast_spec;
 
-	priv->prot_version = protocol_version;
-
 	/* FIXME: should I modify the value of these?
 	 *
-	 * - hsr_dev->flags - i.e.
+	 * - hsr_prp_dev->flags - i.e.
 	 *			IFF_MASTER/SLAVE?
-	 * - hsr_dev->priv_flags - i.e.
+	 * - hsr_prp_dev->priv_flags - i.e.
 	 *			IFF_EBRIDGE?
 	 *			IFF_TX_SKB_SHARING?
 	 *			IFF_HSR_MASTER/SLAVE?
 	 */
 
 	/* Make sure the 1st call to netif_carrier_on() gets through */
-	netif_carrier_off(hsr_dev);
+	netif_carrier_off(hsr_prp_dev);
 
-	res = hsr_prp_add_port(priv, hsr_dev, HSR_PRP_PT_MASTER);
+	res = hsr_prp_add_port(priv, hsr_prp_dev, HSR_PRP_PT_MASTER);
 	if (res)
 		goto err_add_port;
 
-	res = register_netdevice(hsr_dev);
+	res = register_netdevice(hsr_prp_dev);
 	if (res)
 		goto fail;
 
@@ -488,7 +511,8 @@ int hsr_prp_dev_finalize(struct net_device *hsr_dev,
 
 	mod_timer(&priv->prune_timer, jiffies +
 		  msecs_to_jiffies(HSR_PRP_PRUNE_PERIOD));
-	res = hsr_prp_debugfs_init(priv, hsr_dev);
+
+	res = hsr_prp_debugfs_init(priv, hsr_prp_dev);
 	if (res)
 		goto fail;
 

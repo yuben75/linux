@@ -111,7 +111,7 @@ static struct rtnl_link_ops hsr_link_ops __read_mostly = {
 	.maxtype	= IFLA_HSR_MAX,
 	.policy		= hsr_policy,
 	.priv_size	= sizeof(struct hsr_prp_priv),
-	.setup		= hsr_prp_dev_setup,
+	.setup		= hsr_dev_setup,
 	.newlink	= hsr_newlink,
 	.fill_info	= hsr_fill_info,
 };

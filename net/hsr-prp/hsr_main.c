@@ -16,7 +16,7 @@ static int __init hsr_init(void)
 
 	BUILD_BUG_ON(sizeof(struct hsr_tag) != HSR_PRP_HLEN);
 
-	res = hsr_prp_register_notifier();
+	res = hsr_prp_register_notifier(HSR);
 	if (!res)
 		res = hsr_netlink_init();
 
@@ -25,7 +25,7 @@ static int __init hsr_init(void)
 
 static void __exit hsr_exit(void)
 {
-	hsr_prp_unregister_notifier();
+	hsr_prp_unregister_notifier(HSR);
 	hsr_netlink_exit();
 }
 
