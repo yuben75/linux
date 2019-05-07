@@ -362,6 +362,7 @@ struct prueth_emac {
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *root_dir;
 	struct dentry *vlan_filter_file;
+	struct dentry *mc_filter_file;
 #endif
 #ifdef CONFIG_SYSFS
 	struct device_attribute nsp_credit_attr;

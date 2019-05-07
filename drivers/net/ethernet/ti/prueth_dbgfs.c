@@ -78,6 +78,69 @@ static const struct file_operations prueth_vlan_filter_fops = {
 	.release = single_release,
 };
 
+/* prueth_mc_filter_show - Formats and prints mc_filter entries
+ */
+static int
+prueth_mc_filter_show(struct seq_file *sfp, void *data)
+{
+	struct prueth_emac *emac = (struct prueth_emac *)sfp->private;
+	struct prueth *prueth = emac->prueth;
+	void __iomem *ram = prueth->mem[emac->dram].va;
+	u8 val;
+	int i;
+	u32 mc_ctrl_byte = prueth->fw_offsets->mc_ctrl_byte;
+	u32 mc_filter_mask = prueth->fw_offsets->mc_filter_mask;
+	u32 mc_filter_tbl = prueth->fw_offsets->mc_filter_tbl;
+
+	val = readb(ram + mc_ctrl_byte);
+
+	seq_printf(sfp, "MC Filter : %s", val ? "enabled\n" : "disabled\n");
+	seq_puts(sfp, "MC Mask : ");
+	for (i = 0; i < 6; i++) {
+		val = readb(ram + mc_filter_mask + i);
+		if (i == 5)
+			seq_printf(sfp, "%x", val);
+		else
+			seq_printf(sfp, "%x:", val);
+	}
+	seq_puts(sfp, "\n");
+
+	val = readb(ram + mc_ctrl_byte);
+	seq_puts(sfp, "MC Filter table below 1 - Allowed, 0 - Dropped\n");
+
+	if (val) {
+		for (i = 0; i < MULTICAST_TABLE_SIZE; i++) {
+			val = readb(ram + mc_filter_tbl + i);
+			if (!(i % 16))
+				seq_printf(sfp, "\n%3x: ", i);
+			seq_printf(sfp, "%d ", val);
+		}
+	}
+	seq_puts(sfp, "\n");
+
+	return 0;
+}
+
+/* prueth_mc_filter_open - Open the mc_filter file
+ *
+ * Description:
+ * This routine opens a debugfs file mc_filter
+ */
+static int
+prueth_mc_filter_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, prueth_mc_filter_show,
+			   inode->i_private);
+}
+
+static const struct file_operations prueth_mc_filter_fops = {
+	.owner	= THIS_MODULE,
+	.open	= prueth_mc_filter_open,
+	.read	= seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 /* prueth_dualemac_debugfs_term - Tear down debugfs intrastructure for dual emac
  *
  * Description:
@@ -88,7 +151,9 @@ void
 prueth_dualemac_debugfs_term(struct prueth_emac *emac)
 {
 	debugfs_remove(emac->vlan_filter_file);
+	debugfs_remove(emac->mc_filter_file);
 	emac->vlan_filter_file = NULL;
+	emac->mc_filter_file = NULL;
 }
 
 /* prueth_dualemac_debugfs_init - create  debugfs file for dual emac
@@ -96,13 +161,23 @@ prueth_dualemac_debugfs_term(struct prueth_emac *emac)
  * Description:
  * When debugfs is configured this routine creates dual emac debugfs files
  */
-
 int prueth_dualemac_debugfs_init(struct prueth_emac *emac)
 {
 	int rc = -1;
 	struct dentry *de;
 
-	if (emac->root_dir) {
+	if (emac->root_dir && !emac->mc_filter_file &&
+	    !emac->vlan_filter_file) {
+		de = debugfs_create_file("mc_filter", S_IFREG | 0444,
+					 emac->root_dir, emac,
+					 &prueth_mc_filter_fops);
+		if (!de) {
+			netdev_err(emac->ndev,
+				   "Cannot create mc_filter file\n");
+			return rc;
+		}
+		emac->mc_filter_file = de;
+
 		de = debugfs_create_file("vlan_filter", S_IFREG | 0444,
 					 emac->root_dir, emac,
 					 &prueth_vlan_filter_fops);
@@ -130,6 +205,7 @@ prueth_debugfs_term(struct prueth_emac *emac)
 {
 	debugfs_remove_recursive(emac->root_dir);
 	emac->vlan_filter_file = NULL;
+	emac->mc_filter_file = NULL;
 }
 
 /* prueth_debugfs_init - create  debugfs files to display debug info
