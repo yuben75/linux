@@ -110,4 +110,7 @@
 #define SO_TXTIME		61
 #define SCM_TXTIME		SO_TXTIME
 
+#define SO_REDUNDANT		80
+#define SCM_REDUNDANT		SO_REDUNDANT
+
 #endif /* __ASM_GENERIC_SOCKET_H */
