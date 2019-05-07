@@ -29,6 +29,9 @@ int hsr_prp_newlink(int proto, struct net *src_net,
 	struct net_device *link[2];
 	unsigned char mc_lsb, version = 0;
 	char *sproto = (proto == PRP) ? "PRP" : "HSR";
+	unsigned short vid = 0;
+	unsigned char pcp = 0, dei = 0;
+	bool sv_vlan_tag_needed = false;
 
 	if (!data) {
 		netdev_info(dev, "%s: No slave devices specified\n", sproto);
@@ -66,7 +69,31 @@ int hsr_prp_newlink(int proto, struct net *src_net,
 			version = nla_get_u8(data[IFLA_HSR_VERSION]);
 	}
 
-	return hsr_prp_dev_finalize(dev, link, mc_lsb, version);
+	if (data[IFLA_HSR_PRP_SV_VID]) {
+		sv_vlan_tag_needed = true;
+		vid = nla_get_u16(data[IFLA_HSR_PRP_SV_VID]);
+	}
+
+	if (data[IFLA_HSR_PRP_SV_PCP]) {
+		sv_vlan_tag_needed = true;
+		pcp = nla_get_u8(data[IFLA_HSR_PRP_SV_PCP]);
+	}
+
+	if (data[IFLA_HSR_PRP_SV_DEI]) {
+		sv_vlan_tag_needed = true;
+		dei = nla_get_u8(data[IFLA_HSR_PRP_SV_DEI]);
+	}
+
+	if (sv_vlan_tag_needed &&
+	    (vid >= (VLAN_N_VID - 1) || dei > 1 || pcp > 7)) {
+		netdev_info(dev,
+			    "%s: wrong vlan params: vid %d, pcp %d, dei %d\n",
+			    sproto, vid, pcp, dei);
+		return -EINVAL;
+	}
+
+	return hsr_prp_dev_finalize(dev, link, mc_lsb, version,
+				    sv_vlan_tag_needed, vid, pcp, dei);
 }
 
 int hsr_prp_fill_info(struct sk_buff *skb, const struct net_device *dev)

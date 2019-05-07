@@ -24,6 +24,9 @@ static const struct nla_policy hsr_policy[IFLA_HSR_PRP_MAX + 1] = {
 	[IFLA_HSR_VERSION]	= { .type = NLA_U8 },
 	[IFLA_HSR_PRP_SF_MC_ADDR]	= { .len = ETH_ALEN },
 	[IFLA_HSR_PRP_SEQ_NR]		= { .type = NLA_U16 },
+	[IFLA_HSR_PRP_SV_VID]		= { .type = NLA_U16 },
+	[IFLA_HSR_PRP_SV_PCP]		= { .type = NLA_U8 },
+	[IFLA_HSR_PRP_SV_DEI]		= { .type = NLA_U8 },
 };
 
 static int hsr_newlink(struct net *src_net, struct net_device *dev,

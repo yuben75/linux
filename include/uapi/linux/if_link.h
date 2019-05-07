@@ -991,6 +991,9 @@ enum {
 	IFLA_HSR_PRP_SF_MC_ADDR,      /* Supervision frame multicast addr */
 	IFLA_HSR_PRP_SEQ_NR,
 	IFLA_HSR_VERSION,		/* HSR version */
+	IFLA_HSR_PRP_SV_VID,
+	IFLA_HSR_PRP_SV_DEI,
+	IFLA_HSR_PRP_SV_PCP,
 	__IFLA_HSR_PRP_MAX,
 };
 
