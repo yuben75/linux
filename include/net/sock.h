@@ -1616,6 +1616,7 @@ static inline void sockcm_init(struct sockcm_cookie *sockc,
 			       const struct sock *sk)
 {
 	*sockc = (struct sockcm_cookie) { .tsflags = sk->sk_tsflags };
+	memset(&sockc->redinfo, 0, sizeof(sockc->redinfo));
 }
 
 int __sock_cmsg_send(struct sock *sk, struct msghdr *msg, struct cmsghdr *cmsg,
