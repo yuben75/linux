@@ -120,21 +120,24 @@ static struct sk_buff *create_stripped_skb_hsr(struct sk_buff *skb_in,
 static struct sk_buff *frame_get_stripped_skb(struct hsr_prp_frame_info *frame,
 					      struct hsr_prp_port *port)
 {
+	struct hsr_prp_priv *priv = port->priv;
+
 	if (!frame->skb_std) {
 		if (frame->skb_hsr) {
 			frame->skb_std =
 				create_stripped_skb_hsr(frame->skb_hsr, frame);
 		} else if (frame->skb_prp) {
 			/* trim the skb by len - HSR_PRP_HLEN to exclude
-			 * RCT
+			 * RCT if configured to remove RCT
 			 */
-			skb_trim(frame->skb_prp,
-				 frame->skb_prp->len - HSR_PRP_HLEN);
+			if (!priv->rx_offloaded &&
+			    priv->prp_tr == IEC62439_3_TR_REMOVE_RCT)
+				skb_trim(frame->skb_prp,
+					 frame->skb_prp->len - HSR_PRP_HLEN);
 			frame->skb_std =
 				__pskb_copy(frame->skb_prp,
 					    skb_headroom(frame->skb_prp),
-					    GFP_ATOMIC);
-
+							 GFP_ATOMIC);
 		} else {
 			/* Unexpected */
 			WARN_ONCE(1, "%s:%d: Unexpected frame received (port_src %s)\n",
@@ -272,6 +275,9 @@ static struct sk_buff *create_tagged_skb(struct sk_buff *skb_o,
 
 		prp_fill_rct(skb, frame, port);
 		return skb;
+	} else if ((port->priv->prot_version == HSR_V1) &&
+		   (port->priv->hsr_mode == IEC62439_3_HSR_MODE_T)) {
+		return skb_clone(skb_o, GFP_ATOMIC);
 	}
 
 	/* Create the new skb with enough headroom to fit the HSR tag */
@@ -572,19 +578,25 @@ static int fill_frame_info(struct hsr_prp_frame_info *frame,
 			if (port->type != HSR_PRP_PT_MASTER) {
 				frame->is_from_san = true;
 			} else {
-				/* Sequence nr for the master node */
-				spin_lock_irqsave(&port->priv->seqnr_lock,
-						  irqflags);
-				frame->sequence_nr = port->priv->sequence_nr;
-				port->priv->sequence_nr++;
-				spin_unlock_irqrestore(&port->priv->seqnr_lock,
-						       irqflags);
+				if (((priv->prot_version == HSR_V1) &&
+				     (priv->hsr_mode
+					!= IEC62439_3_HSR_MODE_T)) ||
+				     (priv->prot_version == PRP_V1) ||
+				     (priv->prot_version == HSR_V0))	{
+					/* Sequence nr for the master node */
+					spin_lock_irqsave(&priv->seqnr_lock,
+							  irqflags);
+					frame->sequence_nr = priv->sequence_nr;
+					priv->sequence_nr++;
+					spin_unlock_irqrestore(&priv->seqnr_lock,
+							       irqflags);
+				}
 			}
 		}
 	}
 
 	frame->port_rcv = port;
-	check_local_dest(port->priv, skb, frame);
+	check_local_dest(priv, skb, frame);
 
 	return 0;
 }

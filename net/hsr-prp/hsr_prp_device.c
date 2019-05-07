@@ -502,8 +502,12 @@ static void hsr_prp_announce(struct timer_list *t)
 			send_supervision_frame(master, HSR_TLV_LIFE_CHECK,
 					       priv->prot_version);
 		else /* PRP */
-			send_supervision_frame(master, PRP_TLV_LIFE_CHECK_DD,
-					       priv->prot_version);
+			send_supervision_frame(master,
+					       (priv->dd_mode ==
+						IEC62439_3_DD) ?
+						PRP_TLV_LIFE_CHECK_DD :
+						PRP_TLV_LIFE_CHECK_DA,
+						priv->prot_version);
 
 		interval = msecs_to_jiffies(HSR_PRP_LIFE_CHECK_INTERVAL);
 	}
@@ -524,6 +528,7 @@ static void hsr_prp_dev_destroy(struct net_device *ndev)
 
 	priv = netdev_priv(ndev);
 
+	hsr_prp_remove_procfs(priv, ndev);
 	hsr_prp_debugfs_term(priv);
 
 	rtnl_lock();
@@ -750,9 +755,13 @@ int hsr_prp_dev_finalize(struct net_device *hsr_prp_dev,
 	priv->prot_version = protocol_version;
 	if (priv->prot_version == PRP_V1) {
 		/* For PRP, lan_id has most significant 3 bits holding
-		 * the net_id of PRP_LAN_ID
+		 * the net_id of PRP_LAN_ID and also duplicate discard
+		 * mode set.
 		 */
 		priv->net_id = PRP_LAN_ID << 1;
+		priv->dd_mode = IEC62439_3_DD;
+	} else {
+		priv->hsr_mode = IEC62439_3_HSR_MODE_H;
 	}
 
 	spin_lock_init(&priv->seqnr_lock);
@@ -843,12 +852,18 @@ int hsr_prp_dev_finalize(struct net_device *hsr_prp_dev,
 			      slave[1]->dev_addr))
 		goto fail;
 
-	res = hsr_prp_debugfs_init(priv, hsr_prp_dev);
+	res = hsr_prp_create_procfs(priv, hsr_prp_dev);
 	if (res)
 		goto fail;
 
+	res = hsr_prp_debugfs_init(priv, hsr_prp_dev);
+	if (res)
+		goto fail_procfs;
+
 	return 0;
 
+fail_procfs:
+	hsr_prp_remove_procfs(priv, hsr_prp_dev);
 fail:
 	hsr_prp_for_each_port(priv, port)
 		hsr_prp_del_port(port);

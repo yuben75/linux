@@ -9,3 +9,4 @@ hsr-prp-y		:= hsr_prp_main.o hsr_main.o prp_main.o \
 			   hsr_prp_netlink.o hsr_netlink.o prp_netlink.o \
 			   hsr_prp_slave.o hsr_prp_forward.o
 hsr-prp-$(CONFIG_DEBUG_FS) += hsr_prp_debugfs.o
+hsr-prp-$(CONFIG_PROC_FS) += hsr_prp_proc.o

@@ -20,138 +20,54 @@
 #include "hsr_prp_main.h"
 #include "hsr_prp_framereg.h"
 
-static void print_mac_address(struct seq_file *sfp, unsigned char *mac)
-{
-	seq_printf(sfp, "%02x:%02x:%02x:%02x:%02x:%02x:",
-		   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-}
-
-/* hsr_prp_node_table_show - Formats and prints node_table entries */
-static int
-hsr_prp_node_table_show(struct seq_file *sfp, void *data)
-{
-	struct hsr_prp_priv *priv = (struct hsr_prp_priv *)sfp->private;
-	struct hsr_prp_node *node;
-
-	seq_puts(sfp, "Node Table entries\n");
-	seq_puts(sfp, "MAC-Address-A,   MAC-Address-B, time_in[A], ");
-	seq_puts(sfp, "time_in[B], Address-B port");
-	if (priv->prot_version == PRP_V1)
-		seq_puts(sfp, ", san_a, san_b\n");
-	else
-		seq_puts(sfp, "\n");
-	rcu_read_lock();
-	list_for_each_entry_rcu(node, &priv->node_db, mac_list) {
-		/* skip self node */
-		if (hsr_prp_addr_is_self(priv, node->macaddress_A))
-			continue;
-		print_mac_address(sfp, &node->macaddress_A[0]);
-		seq_puts(sfp, " ");
-		print_mac_address(sfp, &node->macaddress_B[0]);
-		seq_printf(sfp, "0x%lx, ", node->time_in[HSR_PRP_PT_SLAVE_A]);
-		seq_printf(sfp, "0x%lx ", node->time_in[HSR_PRP_PT_SLAVE_B]);
-		seq_printf(sfp, "0x%x", node->addr_B_port);
-
-		if (priv->prot_version == PRP_V1)
-			seq_printf(sfp, ", %x, %x\n", node->san_a, node->san_b);
-		else
-			seq_puts(sfp, "\n");
-	}
-	rcu_read_unlock();
-	return 0;
-}
-
-/* hsr_prp_node_table_open - Open the node_table file
- *
- * Description:
- * This routine opens a debugfs file node_table of specific hsr
- * or prp device
+/* hsr_prp_lre_info_show - Formats and prints debug info in the device
  */
 static int
-hsr_prp_node_table_open(struct inode *inode, struct file *filp)
-{
-	return single_open(filp, hsr_prp_node_table_show, inode->i_private);
-}
-
-static const struct file_operations hsr_prp_node_table_fops = {
-	.owner	= THIS_MODULE,
-	.open	= hsr_prp_node_table_open,
-	.read	= seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
-/* hsr_prp_stats_show - Formats and prints stats in the device
- */
-static int
-hsr_prp_stats_show(struct seq_file *sfp, void *data)
+hsr_prp_lre_info_show(struct seq_file *sfp, void *data)
 {
 	struct hsr_prp_priv *priv = (struct hsr_prp_priv *)sfp->private;
-	struct hsr_prp_port *master;
+	bool prp = priv->prot_version > HSR_V1;
 
-	rcu_read_lock();
-	master = hsr_prp_get_port(priv, HSR_PRP_PT_MASTER);
-	rcu_read_unlock();
-
-	seq_puts(sfp, "LRE Stats entries\n");
-	seq_printf(sfp, "cnt_tx_a = %d\n", priv->lre_stats.cnt_tx_a);
-	seq_printf(sfp, "cnt_tx_b = %d\n", priv->lre_stats.cnt_tx_b);
-	/* actually lre_tx_c is whatever sent to the application interface. So
-	 * same as rx_packets
-	 */
-	seq_printf(sfp, "cnt_tx_c = %d\n", priv->lre_stats.cnt_tx_c);
+	seq_puts(sfp, "LRE debug information\n");
+	seq_printf(sfp, "Protocol : %s\n", prp ? "PRP" : "HSR");
+	seq_printf(sfp, "net_id: %d\n", priv->net_id);
+	seq_printf(sfp, "Rx Offloaded: %s\n",
+		   priv->rx_offloaded ? "Yes" : "No");
+	if (!prp)
+		seq_printf(sfp, "L2 fw Offloaded: %s\n",
+			   priv->l2_fwd_offloaded ? "Yes" : "No");
 	seq_printf(sfp, "cnt_tx_sup = %d\n", priv->dbg_stats.cnt_tx_sup);
-	seq_printf(sfp, "cnt_rx_wrong_lan_a = %d\n",
-		   priv->lre_stats.cnt_errwronglan_a);
-	seq_printf(sfp, "cnt_rx_wrong_lan_b = %d\n",
-		   priv->lre_stats.cnt_errwronglan_b);
-	seq_printf(sfp, "cnt_rx_a = %d\n", priv->lre_stats.cnt_rx_a);
-	seq_printf(sfp, "cnt_rx_b = %d\n", priv->lre_stats.cnt_rx_b);
-	/* actually lre_rx_c is whatever received from the application
-	 * interface,  So same as tx_packets
-	 */
-	seq_printf(sfp, "cnt_rx_c = %d\n", priv->lre_stats.cnt_rx_c);
-	seq_printf(sfp, "cnt_rx_errors_a = %d\n", priv->lre_stats.cnt_errors_a);
-	seq_printf(sfp, "cnt_rx_errors_b = %d\n", priv->lre_stats.cnt_errors_b);
-	if (priv->prot_version <= HSR_V1) {
-		seq_printf(sfp, "cnt_own_rx_a = %d\n",
-			   priv->lre_stats.cnt_own_rx_a);
-		seq_printf(sfp, "cnt_own_rx_b = %d\n",
-			   priv->lre_stats.cnt_own_rx_b);
-	}
 	seq_puts(sfp, "\n");
 	return 0;
 }
 
-/* hsr_prp_stats_open - open stats file
+/* hsr_prp_lre_info_open - open lre info file
  *
  * Description:
- * This routine opens a debugfs file stats of specific hsr or
+ * This routine opens a debugfs file lre_info of specific hsr or
  * prp device
  */
 static int
-hsr_prp_stats_open(struct inode *inode, struct file *filp)
+hsr_prp_lre_info_open(struct inode *inode, struct file *filp)
 {
-	return single_open(filp, hsr_prp_stats_show, inode->i_private);
+	return single_open(filp, hsr_prp_lre_info_show, inode->i_private);
 }
 
-static const struct file_operations hsr_prp_stats_fops = {
+static const struct file_operations hsr_prp_lre_info_fops = {
 	.owner	= THIS_MODULE,
-	.open	= hsr_prp_stats_open,
+	.open	= hsr_prp_lre_info_open,
 	.read	= seq_read,
 	.llseek = seq_lseek,
 	.release = single_release,
 };
 
-/* hsr_prp_debugfs_init - create hsr-prp node_table file for dumping
- * the node table and lre stats
+/* hsr_prp_debugfs_init - create debugfs to dump lre info
  *
  * Description:
- * When debugfs is configured this routine sets up the node_table file per
- * hsr device for dumping the node_table entries and stats file for
- * lre stats dump.
+ * dump lre info of hsr or prp device
  */
-int hsr_prp_debugfs_init(struct hsr_prp_priv *priv, struct net_device *ndev)
+int hsr_prp_debugfs_init(struct hsr_prp_priv *priv,
+			 struct net_device *ndev)
 {
 	int rc = -1;
 	struct dentry *de = NULL;
@@ -164,27 +80,19 @@ int hsr_prp_debugfs_init(struct hsr_prp_priv *priv, struct net_device *ndev)
 
 	priv->root_dir = de;
 
-	de = debugfs_create_file("node_table", S_IFREG | 0444, priv->root_dir,
-				 priv, &hsr_prp_node_table_fops);
+	de = debugfs_create_file("lre_info", S_IFREG | 0444,
+				 priv->root_dir, priv,
+				 &hsr_prp_lre_info_fops);
 	if (!de) {
-		netdev_err(ndev, "Cannot create hsr node_table directory\n");
-		goto error_nt;
+		netdev_err(ndev,
+			   "Cannot create hsr-prp lre_info file\n");
+		goto error;
 	}
-	priv->node_tbl_file = de;
-
-	de = debugfs_create_file("stats", S_IFREG | 0444, priv->root_dir, priv,
-				 &hsr_prp_stats_fops);
-	if (!de) {
-		netdev_err(ndev, "Cannot create hsr-prp stats directory\n");
-		goto error_stats;
-	}
-	priv->stats_file = de;
+	priv->lre_info_file = de;
 
 	return 0;
 
-error_stats:
-	debugfs_remove(priv->node_tbl_file);
-error_nt:
+error:
 	debugfs_remove(priv->root_dir);
 	return -ENODEV;
 } /* end of hst_prp_debugfs_init */
@@ -198,10 +106,8 @@ error_nt:
 void
 hsr_prp_debugfs_term(struct hsr_prp_priv *priv)
 {
-	debugfs_remove(priv->node_tbl_file);
-	priv->node_tbl_file = NULL;
-	debugfs_remove(priv->stats_file);
-	priv->stats_file = NULL;
+	debugfs_remove(priv->lre_info_file);
+	priv->lre_info_file = NULL;
 	debugfs_remove(priv->root_dir);
 	priv->root_dir = NULL;
 }
