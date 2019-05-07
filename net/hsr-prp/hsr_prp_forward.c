@@ -153,7 +153,7 @@ static void prp_check_lan_id(struct sk_buff *skb, struct hsr_prp_port *port)
 	struct prp_rct *trailor = skb_get_PRP_rct(skb);
 
 	if (!trailor) {
-		INC_CNT_RX_ERROR(port->type, port->priv);
+		INC_CNT_RX_ERROR_AB(port->type, port->priv);
 		return;
 	}
 
@@ -161,10 +161,10 @@ static void prp_check_lan_id(struct sk_buff *skb, struct hsr_prp_port *port)
 
 	if (port->type == HSR_PRP_PT_SLAVE_A) {
 		if (lan_id & 1)
-			INC_CNT_RX_WRONG_LAN(port->type, port->priv);
+			INC_CNT_RX_WRONG_LAN_AB(port->type, port->priv);
 	} else {
 		if (!(lan_id & 1))
-			INC_CNT_RX_WRONG_LAN(port->type, port->priv);
+			INC_CNT_RX_WRONG_LAN_AB(port->type, port->priv);
 	}
 }
 
@@ -337,6 +337,7 @@ static struct sk_buff *frame_get_tagged_skb(struct hsr_prp_frame_info *frame,
 static void deliver_master(struct sk_buff *skb, struct hsr_prp_node *node_src,
 			   struct hsr_prp_port *port)
 {
+	struct hsr_prp_priv *priv = port->priv;
 	struct net_device *dev = port->dev;
 	bool was_multicast_frame;
 	int res;
@@ -357,6 +358,7 @@ static void deliver_master(struct sk_buff *skb, struct hsr_prp_node *node_src,
 		dev->stats.rx_bytes += skb->len;
 		if (was_multicast_frame)
 			dev->stats.multicast++;
+		INC_CNT_TX_C(priv);
 	}
 }
 
@@ -372,7 +374,7 @@ static int slave_xmit(struct sk_buff *skb, struct hsr_prp_port *port,
 		 */
 		ether_addr_copy(eth_hdr(skb)->h_source, port->dev->dev_addr);
 	}
-	INC_CNT_TX(port->type, port->priv);
+	INC_CNT_TX_AB(port->type, port->priv);
 	return dev_queue_xmit(skb);
 }
 
@@ -455,8 +457,8 @@ static void hsr_prp_forward_do(struct hsr_prp_frame_info *frame)
 		if (!skb) {
 			if (frame->port_rcv->type == HSR_PRP_PT_SLAVE_A ||
 			    frame->port_rcv->type ==  HSR_PRP_PT_SLAVE_B)
-				INC_CNT_RX_ERROR(frame->port_rcv->type,
-						 port->priv);
+				INC_CNT_RX_ERROR_AB(frame->port_rcv->type,
+						    port->priv);
 			else {
 				struct net_device *master_dev =
 				hsr_prp_get_port(port->priv,
@@ -635,7 +637,7 @@ void hsr_prp_forward_skb(struct sk_buff *skb, struct hsr_prp_port *port)
 	return;
 
 out_drop:
-	INC_CNT_RX_ERROR(port->type, port->priv);
+	INC_CNT_RX_ERROR_AB(port->type, port->priv);
 	port->dev->stats.tx_dropped++;
 	kfree_skb(skb);
 }

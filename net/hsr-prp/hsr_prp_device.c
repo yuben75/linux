@@ -368,6 +368,7 @@ static int hsr_prp_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	master = hsr_prp_get_port(priv, HSR_PRP_PT_MASTER);
 	skb->dev = master->dev;
 	hsr_prp_forward_skb(skb, master);
+	INC_CNT_RX_C(priv);
 
 	return NETDEV_TX_OK;
 }

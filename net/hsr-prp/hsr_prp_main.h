@@ -184,17 +184,7 @@ static inline void set_prp_LSDU_size(struct prp_rct *rct, u16 LSDU_size)
 			(LSDU_size & 0x0FFF));
 }
 
-struct hsr_prp_lre_if_stats {
-	u32	cnt_tx_a;
-	u32	cnt_tx_b;
-	u32	cnt_rx_wrong_lan_a;
-	u32	cnt_rx_wrong_lan_b;
-	u32	cnt_rx_a;
-	u32	cnt_rx_b;
-	u32	cnt_rx_errors_a;
-	u32	cnt_rx_errors_b;
-	u32	cnt_own_rx_a; /* For HSR only */
-	u32	cnt_own_rx_b; /* For HSR only */
+struct hsr_prp_debug_stats {
 	u32	cnt_tx_sup;
 };
 
@@ -216,7 +206,8 @@ struct hsr_prp_priv {
 	struct timer_list	prune_timer;
 	unsigned int		rx_offloaded : 1;   /* lre handle in hw */
 	unsigned int		l2_fwd_offloaded : 1; /* L2 forward in hw */
-	struct	hsr_prp_lre_if_stats stats;	/* lre interface stats */
+	struct	hsr_prp_debug_stats dbg_stats;	/* debug stats */
+	struct	lre_stats lre_stats;	/* lre interface stats */
 	int announce_count;
 	u16 sequence_nr;
 	u16 sup_sequence_nr;	/* For HSRv1 separate seq_nr for supervision */
@@ -301,18 +292,24 @@ static inline bool prp_check_lsdu_size(struct sk_buff *skb,
 int hsr_prp_register_notifier(u8 proto);
 void hsr_prp_unregister_notifier(u8 proto);
 
-#define INC_CNT_TX(type, priv) (((type) == HSR_PRP_PT_SLAVE_A) ? \
-		priv->stats.cnt_tx_a++ : priv->stats.cnt_tx_b++)
-#define INC_CNT_RX_WRONG_LAN(type, priv) (((type) == HSR_PRP_PT_SLAVE_A) ? \
-		priv->stats.cnt_rx_wrong_lan_a++ : \
-		priv->stats.cnt_rx_wrong_lan_b++)
-#define INC_CNT_RX(type, priv) (((type) == HSR_PRP_PT_SLAVE_A) ? \
-		priv->stats.cnt_rx_a++ : priv->stats.cnt_rx_b++)
-#define INC_CNT_RX_ERROR(type, priv) (((type) == HSR_PRP_PT_SLAVE_A) ? \
-		priv->stats.cnt_rx_errors_a++ : priv->stats.cnt_rx_errors_b++)
-#define INC_CNT_OWN_RX(type, priv) (((type) == HSR_PRP_PT_SLAVE_A) ? \
-		priv->stats.cnt_own_rx_a++ : priv->stats.cnt_own_rx_b++)
-#define INC_CNT_TX_SUP(priv) ((priv)->stats.cnt_tx_sup++)
+#define INC_CNT_TX_AB(type, priv) (((type) == HSR_PRP_PT_SLAVE_A) ? \
+		(priv)->lre_stats.cnt_tx_a++ : \
+		(priv)->lre_stats.cnt_tx_b++)
+#define INC_CNT_TX_C(priv) ((priv)->lre_stats.cnt_tx_c++)
+#define INC_CNT_RX_WRONG_LAN_AB(type, priv) (((type) == HSR_PRP_PT_SLAVE_A) ? \
+		(priv)->lre_stats.cnt_errwronglan_a++ : \
+		(priv)->lre_stats.cnt_errwronglan_b++)
+#define INC_CNT_RX_AB(type, priv) (((type) == HSR_PRP_PT_SLAVE_A) ? \
+		(priv)->lre_stats.cnt_rx_a++ : \
+		(priv)->lre_stats.cnt_rx_b++)
+#define INC_CNT_RX_C(priv) ((priv)->lre_stats.cnt_rx_c++)
+#define INC_CNT_RX_ERROR_AB(type, priv) (((type) == HSR_PRP_PT_SLAVE_A) ? \
+		(priv)->lre_stats.cnt_errors_a++ : \
+		(priv)->lre_stats.cnt_errors_b++)
+#define INC_CNT_OWN_RX_AB(type, priv) (((type) == HSR_PRP_PT_SLAVE_A) ? \
+		(priv)->lre_stats.cnt_own_rx_a++ : \
+		(priv)->lre_stats.cnt_own_rx_b++)
+#define INC_CNT_TX_SUP(priv) ((priv)->dbg_stats.cnt_tx_sup++)
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 int hsr_prp_debugfs_init(struct hsr_prp_priv *priv, struct net_device *ndev);
