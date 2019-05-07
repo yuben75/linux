@@ -11,6 +11,7 @@
 #include <linux/netdevice.h>
 #include <linux/list.h>
 #include <linux/if_vlan.h>
+#include <net/lredev.h>
 
 /* Time constants as specified in the HSR specification (IEC-62439-3 2010)
  * Table 8.
@@ -326,5 +327,13 @@ static inline int hsr_prp_debugfs_init(struct hsr_prp_priv *priv,
 static inline void hsr_prp_debugfs_term(struct hsr_prp_priv *priv)
 {}
 #endif
-
+int hsr_prp_lredev_attr_set(struct hsr_prp_priv *priv,
+			    struct lredev_attr *attr);
+int hsr_prp_lredev_attr_get(struct hsr_prp_priv *priv,
+			    struct lredev_attr *attr);
+int hsr_prp_lredev_get_node_table(struct hsr_prp_priv *priv,
+				  struct lre_node_table_entry table[],
+				  int size);
+int  hsr_prp_lredev_get_lre_stats(struct hsr_prp_priv *priv,
+				  struct lre_stats *stats);
 #endif /*  __HSR_PRP_MAIN_H */
