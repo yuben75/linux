@@ -27,6 +27,7 @@
 #include "prueth.h"
 #include "icss_mii_rt.h"
 #include "icss_switch.h"
+#include "prueth_dbgfs.h"
 
 #define PRUETH_MODULE_VERSION "0.2"
 #define PRUETH_MODULE_DESCRIPTION "PRUSS Ethernet driver"
@@ -1894,6 +1895,9 @@ static int prueth_probe(struct platform_device *pdev)
 			dev_err(dev, "can't register netdev for port MII0");
 			goto netdev_exit;
 		}
+		ret = prueth_debugfs_init(prueth->emac[PRUETH_MAC0]);
+		if (ret)
+			goto netdev_exit;
 		prueth_sysfs_init(prueth->emac[PRUETH_MAC0]);
 		prueth->registered_netdevs[PRUETH_MAC0] = prueth->emac[PRUETH_MAC0]->ndev;
 	}
@@ -1904,6 +1908,9 @@ static int prueth_probe(struct platform_device *pdev)
 			dev_err(dev, "can't register netdev for port MII1");
 			goto netdev_unregister;
 		}
+		ret = prueth_debugfs_init(prueth->emac[PRUETH_MAC1]);
+		if (ret)
+			goto netdev_exit;
 		prueth_sysfs_init(prueth->emac[PRUETH_MAC1]);
 		prueth->registered_netdevs[PRUETH_MAC1] = prueth->emac[PRUETH_MAC1]->ndev;
 	}
@@ -1918,6 +1925,7 @@ netdev_unregister:
 		if (!prueth->registered_netdevs[i])
 			continue;
 		unregister_netdev(prueth->registered_netdevs[i]);
+		prueth_debugfs_term(prueth->emac[i]);
 	}
 
 netdev_exit:
