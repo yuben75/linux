@@ -10,6 +10,8 @@
 #include <linux/etherdevice.h>
 #include "icss_switch.h"
 #include "prueth.h"
+#include "prueth_node_tbl.h"
+#include "hsr_prp_firmware.h"
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 
@@ -20,11 +22,16 @@ prueth_vlan_filter_show(struct seq_file *sfp, void *data)
 {
 	struct prueth_emac *emac = (struct prueth_emac *)sfp->private;
 	struct prueth *prueth = emac->prueth;
-	void __iomem *ram = prueth->mem[emac->dram].va;
+	void __iomem *ram;
 	u8 val, mask;
 	int i, j;
 	u32 vlan_ctrl_byte = prueth->fw_offsets->vlan_ctrl_byte;
 	u32 vlan_filter_tbl = prueth->fw_offsets->vlan_filter_tbl;
+
+	if (PRUETH_IS_EMAC(prueth))
+		ram = prueth->mem[emac->dram].va;
+	else
+		ram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
 
 	val = readb(ram + vlan_ctrl_byte);
 	seq_printf(sfp, "VLAN Filter : %s",
@@ -85,12 +92,17 @@ prueth_mc_filter_show(struct seq_file *sfp, void *data)
 {
 	struct prueth_emac *emac = (struct prueth_emac *)sfp->private;
 	struct prueth *prueth = emac->prueth;
-	void __iomem *ram = prueth->mem[emac->dram].va;
+	void __iomem *ram;
 	u8 val;
 	int i;
 	u32 mc_ctrl_byte = prueth->fw_offsets->mc_ctrl_byte;
 	u32 mc_filter_mask = prueth->fw_offsets->mc_filter_mask;
 	u32 mc_filter_tbl = prueth->fw_offsets->mc_filter_tbl;
+
+	if (PRUETH_IS_EMAC(prueth))
+		ram = prueth->mem[emac->dram].va;
+	else
+		ram = prueth->mem[PRUETH_MEM_DRAM1].va;
 
 	val = readb(ram + mc_ctrl_byte);
 
