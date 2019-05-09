@@ -40,18 +40,23 @@ struct pruss_match_private_data {
 /**
  * pruss_get() - get the pruss for a given PRU remoteproc
  * @rproc: remoteproc handle of a PRU instance
+ * @pruss_id: integer pointer to fill in the pruss instance id
  *
  * Finds the parent pruss device for a PRU given the @rproc handle of the
- * PRU remote processor. This function increments the pruss device's refcount,
- * so always use pruss_put() to decrement it back once pruss isn't needed
- * anymore.
+ * PRU remote processor. The function will also returns the PRUSS instance id
+ * to requestors if @pruss_id is provided. This can be used by PRU client
+ * drivers to distinguish between multiple PRUSS instances, and build some
+ * customization around a specific PRUSS instance.
+
+ * This function increments the pruss device's refcount, so always use
+ * pruss_put() to decrement it back once pruss isn't needed anymore.
  *
  * Returns the pruss handle on success, and an ERR_PTR on failure using one
  * of the following error values
  *    -EINVAL if invalid parameter
  *    -ENODEV if PRU device or PRUSS device is not found
  */
-struct pruss *pruss_get(struct rproc *rproc)
+struct pruss *pruss_get(struct rproc *rproc, int *pruss_id)
 {
 	struct pruss *pruss;
 	struct device *dev;
@@ -75,6 +80,9 @@ struct pruss *pruss_get(struct rproc *rproc)
 		return ERR_PTR(-ENODEV);
 
 	get_device(pruss->dev);
+	if (pruss_id)
+		*pruss_id = pruss->id;
+
 
 	return pruss;
 }

@@ -163,7 +163,7 @@ struct pruss;
 
 #if IS_ENABLED(CONFIG_TI_PRUSS)
 
-struct pruss *pruss_get(struct rproc *rproc);
+struct pruss *pruss_get(struct rproc *rproc, int *pruss_id);
 void pruss_put(struct pruss *pruss);
 int pruss_request_mem_region(struct pruss *pruss, enum pruss_mem mem_id,
 			     struct pruss_mem_region *region);
@@ -177,7 +177,7 @@ int pruss_intc_trigger(unsigned int irq);
 
 #else
 
-static inline struct pruss *pruss_get(struct rproc *rproc)
+static inline struct pruss *pruss_get(struct rproc *rproc, int *pruss_id)
 {
 	return ERR_PTR(-ENOTSUPP);
 }
