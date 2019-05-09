@@ -1004,6 +1004,32 @@ static void emac_set_stats(struct prueth_emac *emac,
 	memcpy_fromio(dram + STATISTICS_OFFSET, pstats, sizeof(*pstats));
 }
 
+static void emac_dualemac_get_stats(struct prueth_emac *emac,
+				    struct emac_statistics *pstats)
+{
+	void __iomem *ram = emac->prueth->mem[emac->dram].va;
+
+	memcpy_fromio(&pstats->vlan_dropped,
+		      ram + ICSS_EMAC_FW_VLAN_FILTER_DROP_CNT_OFFSET,
+		      sizeof(pstats->vlan_dropped));
+	memcpy_fromio(&pstats->multicast_dropped,
+		      ram + ICSS_EMAC_FW_MULTICAST_FILTER_DROP_CNT_OFFSET,
+		      sizeof(pstats->multicast_dropped));
+}
+
+static void emac_dualemac_set_stats(struct prueth_emac *emac,
+				    struct emac_statistics *pstats)
+{
+	void __iomem *ram = emac->prueth->mem[emac->dram].va;
+
+	memcpy_fromio(ram + ICSS_EMAC_FW_VLAN_FILTER_DROP_CNT_OFFSET,
+		      &pstats->vlan_dropped,
+		      sizeof(pstats->vlan_dropped));
+	memcpy_fromio(ram + ICSS_EMAC_FW_MULTICAST_FILTER_DROP_CNT_OFFSET,
+		      &pstats->multicast_dropped,
+		      sizeof(pstats->multicast_dropped));
+}
+
 /**
  * emac_napi_poll - EMAC NAPI Poll function
  * @ndev: EMAC network adapter
@@ -1086,6 +1112,7 @@ static int emac_ndo_open(struct net_device *ndev)
 
 	/* restore stats */
 	emac_set_stats(emac, &emac->stats);
+	emac_dualemac_set_stats(emac, &prueth->emac_stats);
 
 	/* initialized Network Storm Prevention timer count */
 	emac->nsp_timer_count = PRUETH_DEFAULT_NSP_TIMER_COUNT;
@@ -1164,6 +1191,7 @@ static int emac_ndo_stop(struct net_device *ndev)
 
 	/* save stats */
 	emac_get_stats(emac, &emac->stats);
+	emac_dualemac_get_stats(emac, &emac->prueth->emac_stats);
 
 	/* free rx and tx interrupts */
 	free_irq(emac->tx_irq, ndev);
@@ -1537,11 +1565,25 @@ static const struct {
 	{"txHWQUnderFlow", PRUETH_STAT_OFFSET(tx_hwq_underflow)},
 };
 
+#define PRUETH_EMAC_STAT_OFS(m) offsetof(struct emac_statistics, m)
+static const struct {
+	char string[ETH_GSTRING_LEN];
+	u32 offset;
+} prueth_ethtool_emac_stats[] = {
+	{"emacMulticastDropped", PRUETH_EMAC_STAT_OFS(multicast_dropped)},
+	{"emacVlanDropped", PRUETH_EMAC_STAT_OFS(vlan_dropped)},
+};
+
 static int emac_get_sset_count(struct net_device *ndev, int stringset)
 {
+	int a_size;
+
 	switch (stringset) {
 	case ETH_SS_STATS:
-		return ARRAY_SIZE(prueth_ethtool_stats);
+		a_size = ARRAY_SIZE(prueth_ethtool_stats);
+
+		a_size += ARRAY_SIZE(prueth_ethtool_emac_stats);
+		return a_size;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -1556,6 +1598,12 @@ static void emac_get_strings(struct net_device *ndev, u32 stringset, u8 *data)
 	case ETH_SS_STATS:
 		for (i = 0; i < ARRAY_SIZE(prueth_ethtool_stats); i++) {
 			memcpy(p, prueth_ethtool_stats[i].string,
+			       ETH_GSTRING_LEN);
+			p += ETH_GSTRING_LEN;
+		}
+		for (i = 0; i < ARRAY_SIZE(prueth_ethtool_emac_stats);
+			     i++) {
+			memcpy(p, prueth_ethtool_emac_stats[i].string,
 			       ETH_GSTRING_LEN);
 			p += ETH_GSTRING_LEN;
 		}
@@ -1612,6 +1660,8 @@ static void emac_get_ethtool_stats(struct net_device *ndev,
 	u32 val;
 	int i;
 	void *ptr;
+	struct emac_statistics emac_stats;
+	int emac_start;
 
 	emac_get_stats(emac, &pstats);
 
@@ -1620,6 +1670,15 @@ static void emac_get_ethtool_stats(struct net_device *ndev,
 		ptr += prueth_ethtool_stats[i].offset;
 		val = *(u32 *)ptr;
 		data[i] = val;
+	}
+
+	emac_dualemac_get_stats(emac, &emac_stats);
+	emac_start = ARRAY_SIZE(prueth_ethtool_stats);
+	for (i = 0; i < ARRAY_SIZE(prueth_ethtool_emac_stats); i++) {
+		ptr = &emac_stats;
+		ptr += prueth_ethtool_emac_stats[i].offset;
+		val = *(u32 *)ptr;
+		data[emac_start + i] = val;
 	}
 }
 

@@ -218,6 +218,11 @@ struct port_statistics {
 	u32 sqe_test_error;
 } __packed;
 
+struct emac_statistics {
+	u32 vlan_dropped;
+	u32 multicast_dropped;
+} __packed;
+
 enum pruss_device {
 	PRUSS_AM57XX = 0,
 	PRUSS_AM4376,
@@ -407,6 +412,7 @@ struct prueth {
 	unsigned int emac_configured;
 	unsigned int tbl_check_period;
 	struct hrtimer tbl_check_timer;
+	struct emac_statistics emac_stats;
 };
 
 #ifdef CONFIG_SYSFS
