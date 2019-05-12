@@ -554,8 +554,9 @@ struct prueth_emac {
 	unsigned int nsp_credit;
 	unsigned char mc_mac_mask[ETH_ALEN];
 	struct kobject kobj;
-#ifdef CONFIG_DEBUG_FS
+#ifdef	CONFIG_DEBUG_FS
 	struct dentry *root_dir;
+	struct dentry *stats_file;
 	struct dentry *vlan_filter_file;
 	struct dentry *mc_filter_file;
 #endif
@@ -667,6 +668,15 @@ struct prueth {
 	 * concurrent device open happens.
 	 */
 	struct mutex mlock;
+#ifdef	CONFIG_DEBUG_FS
+	struct dentry *root_dir;
+	struct dentry *node_tbl_file;
+	struct dentry *mc_filter_file;
+	struct dentry *vlan_filter_file;
+	struct dentry *error_stats_file;
+	struct dentry *nt_index;
+	struct dentry *nt_bins;
+#endif
 	struct node_tbl	*nt;
 	struct nt_queue_t *mac_queue;
 	struct kthread_worker *nt_kworker;

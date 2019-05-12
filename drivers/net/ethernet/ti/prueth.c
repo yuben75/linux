@@ -2618,6 +2618,12 @@ static int emac_ndo_open(struct net_device *ndev)
 			}
 		}
 
+		if (PRUETH_HAS_RED(prueth)) {
+			ret = prueth_hsr_prp_debugfs_init(prueth);
+			if (ret)
+				goto free_ptp_irq;
+		}
+
 		/* Enable IEP Counter */
 		regmap_update_bits(prueth->iep, PRUSS_IEP_GLOBAL_CFG,
 			   PRUSS_IEP_GLOBAL_CFG_CNT_ENABLE,
@@ -2651,6 +2657,13 @@ static int emac_ndo_open(struct net_device *ndev)
 		}
 	}
 
+	/* Init emac debugfs */
+	if (PRUETH_IS_EMAC(prueth)) {
+		ret = prueth_dualemac_debugfs_init(emac);
+		if (ret)
+			goto clean_debugfs_hsr_prp;
+	}
+
 	/* reset and start PRU firmware */
 	if (PRUETH_HAS_SWITCH(prueth))
 		prueth_sw_emac_config(prueth, emac);
@@ -2671,7 +2684,7 @@ static int emac_ndo_open(struct net_device *ndev)
 		ret = emac_set_boot_pru(emac, ndev);
 
 	if (ret)
-		goto free_ptp_irq;
+		goto clean_debugfs_emac;
 
 	/* initialized Network Storm Prevention timer count */
 	emac->nsp_timer_count = PRUETH_DEFAULT_NSP_TIMER_COUNT;
@@ -2713,6 +2726,11 @@ static int emac_ndo_open(struct net_device *ndev)
 
 	return 0;
 
+clean_debugfs_emac:
+	prueth_debugfs_term(emac);
+clean_debugfs_hsr_prp:
+	if (PRUETH_HAS_RED(prueth))
+		prueth_hsr_prp_debugfs_term(prueth);
 free_ptp_irq:
 	mutex_unlock(&prueth->mlock);
 	if (!PRUETH_HAS_SWITCH(prueth))
@@ -2737,6 +2755,7 @@ static int sw_emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 	if (prueth->emac_configured)
 		return 0;
 
+	prueth_hsr_prp_debugfs_term(prueth);
 	rproc_shutdown(prueth->pru0);
 	rproc_shutdown(prueth->pru1);
 	emac_lre_get_stats(emac, &emac->prueth->lre_stats);
@@ -2783,6 +2802,9 @@ static int emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 	disable_irq(emac->rx_irq);
 	free_irq(emac->tx_irq, ndev);
 	free_irq(emac->rx_irq, ndev);
+
+	/* Remove debugfs directory */
+	prueth_dualemac_debugfs_term(emac);
 
 	hrtimer_cancel(&prueth->tbl_check_timer);
 	/* Disable VLAN filter */
@@ -3954,7 +3976,7 @@ static int prueth_probe(struct platform_device *pdev)
 		}
 		ret = prueth_debugfs_init(prueth->emac[PRUETH_MAC0]);
 		if (ret)
-			goto netdev_exit;
+			goto debugfs0_exit;
 		prueth_sysfs_init(prueth->emac[PRUETH_MAC0]);
 		prueth->registered_netdevs[PRUETH_MAC0] = prueth->emac[PRUETH_MAC0]->ndev;
 	}
@@ -3967,7 +3989,7 @@ static int prueth_probe(struct platform_device *pdev)
 		}
 		ret = prueth_debugfs_init(prueth->emac[PRUETH_MAC1]);
 		if (ret)
-			goto netdev_exit;
+			goto debugfs1_exit;
 		prueth_sysfs_init(prueth->emac[PRUETH_MAC1]);
 		prueth->registered_netdevs[PRUETH_MAC1] = prueth->emac[PRUETH_MAC1]->ndev;
 	}
@@ -3977,13 +3999,17 @@ static int prueth_probe(struct platform_device *pdev)
 
 	return 0;
 
+debugfs1_exit:
+	prueth_debugfs_term(prueth->emac[PRUETH_MAC1]);
+
 netdev_unregister:
 	for (i = 0; i < PRUETH_NUM_MACS; i++) {
 		if (!prueth->registered_netdevs[i])
 			continue;
 		unregister_netdev(prueth->registered_netdevs[i]);
-		prueth_debugfs_term(prueth->emac[i]);
 	}
+debugfs0_exit:
+	prueth_debugfs_term(prueth->emac[PRUETH_MAC0]);
 
 netdev_exit:
 	for (i = 0; i < PRUETH_NUM_MACS; i++) {
@@ -4029,12 +4055,14 @@ static int prueth_remove(struct platform_device *pdev)
 	struct prueth *prueth = platform_get_drvdata(pdev);
 	int i;
 
+	prueth_hsr_prp_debugfs_term(prueth);
 	prueth->tbl_check_period = 0;
 	prueth_remove_sysfs_entries(prueth->emac[PRUETH_MAC0]);
 	prueth_remove_sysfs_entries(prueth->emac[PRUETH_MAC1]);
 	for (i = 0; i < PRUETH_NUM_MACS; i++) {
 		if (!prueth->registered_netdevs[i])
 			continue;
+		prueth_debugfs_term(prueth->emac[i]);
 		unregister_netdev(prueth->registered_netdevs[i]);
 	}
 
