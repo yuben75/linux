@@ -360,6 +360,64 @@ static const struct file_operations prueth_mc_filter_fops = {
 	.release = single_release,
 };
 
+/* prueth_lre_config_show - print the configuration parameters at
+ * the lre device
+ */
+static int
+prueth_lre_config_show(struct seq_file *sfp, void *data)
+{
+	struct prueth *prueth = (struct prueth *)sfp->private;
+	void __iomem *dram0 = prueth->mem[PRUETH_MEM_DRAM0].va;
+	void __iomem *dram1 = prueth->mem[PRUETH_MEM_DRAM1].va;
+	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
+	int hsr = 0;
+	u32 val;
+
+	if (PRUETH_HAS_HSR(prueth))
+		hsr = 1;
+
+	seq_printf(sfp, "Protocol is %s\n", hsr == 1 ? "HSR" : "PRP");
+	if (hsr) {
+		val = readl(dram0 + LRE_HSR_MODE);
+		seq_printf(sfp, "mode %u\n", val);
+	}
+
+	val = readl(dram1 + DUPLI_FORGET_TIME);
+	seq_printf(sfp, "Duplicate List Maximum reside time  %u\n", val * 10);
+	val = readl(sram + LRE_DUPLICATE_DISCARD);
+	seq_printf(sfp, "Duplicate Discard%u\n", val);
+	if (!hsr) {
+		val = readl(sram + LRE_TRANSPARENT_RECEPTION);
+		seq_printf(sfp, "PRP Tranparent Reception%u\n", val);
+	}
+	seq_printf(sfp, "Last clear node table command%u\n",
+		   prueth->node_table_clear_last_cmd);
+	seq_puts(sfp, "\n");
+
+	return 0;
+}
+
+/* prueth_lre_config_open - Open the lre config debugfs file
+ *
+ * Description:
+ * This routine opens a debugfs file lre_config file to view
+ * the configuration parameters at the offloaded lre device.
+ */
+static int
+prueth_lre_config_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, prueth_lre_config_show,
+			   inode->i_private);
+}
+
+static const struct file_operations prueth_lre_config_fops = {
+	.owner	= THIS_MODULE,
+	.open	= prueth_lre_config_open,
+	.read	= seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 /* prueth_error_stats_show - print the error stats
  */
 static int
@@ -503,6 +561,7 @@ prueth_hsr_prp_debugfs_term(struct prueth *prueth)
 	prueth->node_tbl_file = NULL;
 	prueth->mc_filter_file = NULL;
 	prueth->vlan_filter_file = NULL;
+	prueth->lre_cfg_file = NULL;
 	prueth->error_stats_file = NULL;
 	prueth->root_dir = NULL;
 	prueth->nt_index = NULL;
@@ -570,6 +629,15 @@ int prueth_hsr_prp_debugfs_init(struct prueth *prueth)
 		goto error;
 	}
 	prueth->vlan_filter_file = de;
+
+	de = debugfs_create_file("lre_config", 0444,
+				 prueth->root_dir, prueth,
+				 &prueth_lre_config_fops);
+	if (!de) {
+		dev_err(dev, "Cannot create lre_config file\n");
+		goto error;
+	}
+	prueth->lre_cfg_file = de;
 
 	de = debugfs_create_file("error_stats", 0444,
 				 prueth->root_dir, prueth,

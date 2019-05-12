@@ -676,6 +676,7 @@ struct prueth {
 	struct dentry *node_tbl_file;
 	struct dentry *mc_filter_file;
 	struct dentry *vlan_filter_file;
+	struct dentry *lre_cfg_file;
 	struct dentry *error_stats_file;
 	struct dentry *nt_index;
 	struct dentry *nt_bins;
