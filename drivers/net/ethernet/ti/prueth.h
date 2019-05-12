@@ -21,6 +21,7 @@
 #include <linux/kthread.h>
 #include <linux/pruss.h>
 #include <linux/if_ether.h>
+#include <net/lredev.h>
 #include <linux/netdev_features.h>
 #ifdef CONFIG_PREEMPT_RT_FULL
 #include <linux/swork.h>
@@ -643,6 +644,7 @@ struct prueth {
 	struct regmap *mii_rt;
 	struct regmap *iep;
 
+	enum iec62439_3_tr_modes prp_tr_mode;
 	struct device_node *eth_node[PRUETH_NUM_MACS];
 	struct device_node *prueth_np;
 	struct prueth_emac *emac[PRUETH_NUM_MACS];
@@ -656,6 +658,7 @@ struct prueth {
 	unsigned int emac_configured;
 	unsigned int tbl_check_period;
 	unsigned int node_table_clear;
+	unsigned int node_table_clear_last_cmd;
 	unsigned int tbl_check_mask;
 	struct hrtimer tbl_check_timer;
 	struct prueth_mmap_port_cfg_basis mmap_port_cfg_basis[PRUETH_PORT_MAX];
