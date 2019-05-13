@@ -644,6 +644,7 @@ struct prueth {
 	struct regmap *mii_rt;
 	struct regmap *iep;
 
+	int fw_drop_untagged_vlan;
 	enum iec62439_3_tr_modes prp_tr_mode;
 	struct device_node *eth_node[PRUETH_NUM_MACS];
 	struct device_node *prueth_np;

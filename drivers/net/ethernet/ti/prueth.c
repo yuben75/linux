@@ -88,6 +88,18 @@ static char *pruss2_port1_mc_mask = PRUETH_DEFAULT_MC_MASK;
 module_param(pruss2_port1_mc_mask, charp, 0444);
 MODULE_PARM_DESC(pruss2_port1_mc_mask, "Choose pruss2 port1 MC mask");
 
+static int pruss0_fw_drop_untagged;
+module_param(pruss0_fw_drop_untagged, int, 0444);
+MODULE_PARM_DESC(pruss0_fw_drop_untagged, "Drop Untagged VLAN frames at PRU firmware");
+
+static int pruss1_fw_drop_untagged;
+module_param(pruss1_fw_drop_untagged, int, 0444);
+MODULE_PARM_DESC(pruss1_fw_drop_untagged, "Drop Untagged VLAN frames at PRU firmware");
+
+static int pruss2_fw_drop_untagged;
+module_param(pruss2_fw_drop_untagged, int, 0444);
+MODULE_PARM_DESC(pruss2_fw_drop_untagged, "Drop Untagged VLAN frames at PRU firmware");
+
 static int debug_level = -1;
 module_param(debug_level, int, 0444);
 MODULE_PARM_DESC(debug_level, "PRUETH debug level (NETIF_MSG bits)");
@@ -3237,7 +3249,27 @@ static int emac_add_del_vid(struct prueth_emac *emac,
 		writeb(val, ram + vlan_filter_tbl + index);
 	}
 
-	writeb(VLAN_FLTR_ENA, ram + vlan_ctrl_byte);
+	/* Enable VLAN filter for. By default, allow priority
+	 * tagged frames to be forwarded to host by enabling the
+	 * corresponding control bit. However when VLAN filter is
+	 * enabled, it caused SV untagged frames to be dropped as well
+	 * which is undesirable. To workaround that, enable untagged
+	 * frames as well to host.  By convention, 0 in control bit
+	 * means forward and 1 means drop.
+	 *
+	 * TODO: This is still not working as desired. SV frames seem
+	 * to skip VLAN filtering. When SV VLAN ID is added to filter,
+	 * Host receives the untagged SV frames as well. So for now
+	 * allow untagged frames to host by default and use a boot
+	 * parameter to control untagged receive.
+	 */
+	if (prueth->fw_drop_untagged_vlan)
+		writeb(VLAN_FLTR_ENA |
+		       (VLAN_FLTR_UNTAG_HOST_RCV_NAL <<
+			VLAN_FLTR_UNTAG_HOST_RCV_CTRL_SHIFT),
+		       ram + vlan_ctrl_byte);
+	else
+		writeb(VLAN_FLTR_ENA, ram + vlan_ctrl_byte);
 	spin_unlock_irqrestore(&emac->addr_lock, flags);
 
 	return 0;
@@ -3984,7 +4016,8 @@ static int prueth_probe(struct platform_device *pdev)
 	struct device_node *eth0_node, *eth1_node;
 	const struct of_device_id *match;
 	struct pruss *pruss;
-	int pruss_id1, pruss_id2, ethtype1, ethtype2, i, ret;
+	int pruss_id1, pruss_id2, ethtype1, ethtype2, drop_untagged1,
+	drop_untagged2, i, ret;
 	char *mc_mask1_port0, *mc_mask1_port1, *mc_mask2_port0, *mc_mask2_port1;
 
 	if (!np)
@@ -4109,6 +4142,8 @@ static int prueth_probe(struct platform_device *pdev)
 		mc_mask1_port1 = pruss1_port1_mc_mask;
 		mc_mask2_port0 = pruss2_port0_mc_mask;
 		mc_mask2_port1 = pruss2_port1_mc_mask;
+		drop_untagged1 = pruss1_fw_drop_untagged;
+		drop_untagged2 = pruss2_fw_drop_untagged;
 	} else {
 		pruss_id1 = PRUSS0;
 		pruss_id2 = PRUSS1;
@@ -4118,12 +4153,17 @@ static int prueth_probe(struct platform_device *pdev)
 		mc_mask1_port1 = pruss0_port1_mc_mask;
 		mc_mask2_port0 = pruss1_port0_mc_mask;
 		mc_mask2_port1 = pruss1_port1_mc_mask;
+		drop_untagged1 = pruss0_fw_drop_untagged;
+		drop_untagged2 = pruss1_fw_drop_untagged;
 	}
 
-	if (prueth->pruss_id == pruss_id1)
+	if (prueth->pruss_id == pruss_id1) {
 		prueth->eth_type = ethtype1;
-	else
+		prueth->fw_drop_untagged_vlan = drop_untagged1;
+	} else {
 		prueth->eth_type = ethtype2;
+		prueth->fw_drop_untagged_vlan = drop_untagged2;
+	}
 
 	prueth->ocmc_ram_size = OCMC_RAM_SIZE;
 	prueth->sram_pool = of_gen_pool_get(np, "sram", 0);
@@ -4192,6 +4232,8 @@ static int prueth_probe(struct platform_device *pdev)
 					       mc_mask2_port1);
 	}
 
+	dev_info(dev, "pruss_fw_drop_untagged_vlan %d\n",
+		 prueth->fw_drop_untagged_vlan);
 	if (eth0_node) {
 		dev_info(dev, "pruss MC Mask (Port 0) %x:%x:%x:%x:%x:%x\n",
 			 prueth->emac[PRUETH_MAC0]->mc_mac_mask[0],
