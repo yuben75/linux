@@ -225,6 +225,9 @@ static const unsigned int emac_port_rx_priority_queue_ids[][2] = {
 	},
 };
 
+#define PRUETH_ETH_TYPE_OFFSET           12
+#define PRUETH_ETH_TYPE_UPPER_SHIFT      8
+
 static int prueth_ecap_initialization(struct prueth_emac *emac,
 				      u32 new_timeout_val,
 				      u32 use_adaptive,
@@ -1343,7 +1346,8 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 	/* OCMC RAM is not cached and read order is not important */
 	void *ocmc_ram = (__force void *)emac->prueth->mem[PRUETH_MEM_OCMC].va;
 	unsigned int actual_pkt_len;
-	u16 start_offset = 0;
+	u16 start_offset = 0, type;
+	u8 offset = 0, *ptr;
 
 	if (PRUETH_HAS_HSR(prueth))
 		start_offset = (pkt_info.start_offset ? RED_TAG_RCT_SIZE : 0);
@@ -1429,6 +1433,17 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 		memcpy(dst_addr, src_addr, actual_pkt_len);
 	}
 
+	/* Check if VLAN tag is present since SV payload location will change
+	 * based on that
+	 */
+	if (PRUETH_HAS_RED(prueth)) {
+		ptr = nt_dst_addr + PRUETH_ETH_TYPE_OFFSET;
+		type = (*ptr++) << PRUETH_ETH_TYPE_UPPER_SHIFT;
+		type |= *ptr++;
+		if (type == ETH_P_8021Q)
+			offset = 4;
+	}
+
 	/* TODO. The check for FW_REV_V1_0 is a workaround since
 	 * lookup of MAC address in Node table by this version of firmware
 	 * is not reliable. Once this issue is fixed in firmware, this driver
@@ -1438,17 +1453,16 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 	    (!pkt_info.lookup_success || fw_data->fw_rev == FW_REV_V1_0)) {
 		if (PRUETH_HAS_PRP(prueth)) {
 			memcpy(macid,
-			       ((pkt_info.sv_frame) ? nt_dst_addr +
-				SV_FRAME_OFFSET :
-				nt_dst_addr + TAG_OR_RCT_LEN),
-				TAG_OR_RCT_LEN);
+			       ((pkt_info.sv_frame) ?
+				nt_dst_addr + SV_FRAME_OFFSET + offset :
+				nt_dst_addr + TAG_OR_RCT_LEN), TAG_OR_RCT_LEN);
 
 			node_table_insert(prueth, macid, emac->port_id,
 					  pkt_info.sv_frame, RED_PROTO_PRP,
 					  &prueth->nt_lock);
 
 		} else if (pkt_info.sv_frame) {
-			memcpy(macid, nt_dst_addr + SV_FRAME_OFFSET,
+			memcpy(macid, nt_dst_addr + SV_FRAME_OFFSET + offset,
 			       TAG_OR_RCT_LEN);
 			node_table_insert(prueth, macid, emac->port_id,
 					  pkt_info.sv_frame, RED_PROTO_HSR,
