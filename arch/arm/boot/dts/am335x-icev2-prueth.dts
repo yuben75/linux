@@ -31,7 +31,6 @@
 		sram = <&ocmcram>;
 		interrupt-parent = <&pruss_intc>;
 		mii-rt = <&pruss_mii_rt>;
-		iep = <&pruss_iep>;
 		pinctrl-0 = <&pruss_eth_default>;
 		pinctrl-names = "default";
 

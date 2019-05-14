@@ -716,19 +716,15 @@
 					reg = <0x20a80000 0x2000>,
 					      <0x20a82000 0x2000>,
 					      <0x20a90000 0x10000>,
+					      <0x20aae000 0x31c>,
 					      <0x20ab0000 0x60>;
 					reg-names = "dram0", "dram1",
-						    "shrdram2", "ecap";
+						    "shrdram2", "iep", "ecap";
 				};
 
 				pruss0_cfg: cfg@20aa6000 {
 					compatible = "syscon";
 					reg = <0x20aa6000 0x2000>;
-				};
-
-				pruss0_iep: iep@20aae000 {
-					compatible = "syscon";
-					reg = <0x20aae000 0x31c>;
 				};
 
 				pruss0_mii_rt: mii-rt@20ab2000 {
@@ -813,19 +809,15 @@
 					reg = <0x20ac0000 0x2000>,
 					      <0x20ac2000 0x2000>,
 					      <0x20ad0000 0x10000>,
+					      <0x20aee000 0x31c>,
 					      <0x20af0000 0x60>;
 					reg-names = "dram0", "dram1",
-						    "shrdram2", "ecap";
+						    "shrdram2", "iep", "ecap";
 				};
 
 				pruss1_cfg: cfg@20ae6000 {
 					compatible = "syscon";
 					reg = <0x20ae6000 0x2000>;
-				};
-
-				pruss1_iep: iep@20aee000 {
-					compatible = "syscon";
-					reg = <0x20aee000 0x31c>;
 				};
 
 				pruss1_mii_rt: mii-rt@20af2000 {

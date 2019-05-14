@@ -166,7 +166,6 @@
 		sram = <&ocmcram1>;
 		interrupt-parent = <&pruss2_intc>;
 		mii-rt = <&pruss2_mii_rt>;
-		iep = <&pruss2_iep>;
 
 		pruss2_emac0: ethernet-mii0 {
 			phy-handle = <&pruss2_eth0_phy>;
