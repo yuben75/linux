@@ -26,6 +26,7 @@
 struct pruss_private_data {
 	bool has_no_sharedram;
 	bool ecap_used;
+	bool iep_memregion;
 };
 
 /**
@@ -373,7 +374,7 @@ static int pruss_probe(struct platform_device *pdev)
 	int ret, i, index;
 	const struct pruss_private_data *data;
 	const char *mem_names[PRUSS_MEM_MAX] = { "dram0", "dram1", "shrdram2",
-						 "ecap" };
+						 "iep", "ecap" };
 	struct regmap_config syscon_config = syscon_regmap_config;
 
 	if (!node) {
@@ -466,6 +467,10 @@ skip_mux:
 		    !strcmp(mem_names[i], "ecap"))
 			continue;
 
+		if ((!data || !data->iep_memregion) &&
+		    !strcmp(mem_names[i], "iep"))
+			continue;
+
 		index = of_property_match_string(np, "reg-names", mem_names[i]);
 		if (index < 0) {
 			of_node_put(np);
@@ -521,6 +526,7 @@ static int pruss_remove(struct platform_device *pdev)
 /* instance-specific driver private data */
 static const struct pruss_private_data am335x_pruss_priv_data = {
 	.ecap_used = true,
+	.iep_memregion = true,
 };
 
 static const struct pruss_match_private_data am335x_match_data[] = {
@@ -536,11 +542,13 @@ static const struct pruss_match_private_data am335x_match_data[] = {
 static const struct pruss_private_data am437x_pruss1_priv_data = {
 	.has_no_sharedram = false,
 	.ecap_used = true,
+	.iep_memregion = true,
 };
 
 static const struct pruss_private_data am437x_pruss0_priv_data = {
 	.has_no_sharedram = true,
 	.ecap_used = true,
+	.iep_memregion = true,
 };
 
 static const struct pruss_match_private_data am437x_match_data[] = {
@@ -559,6 +567,7 @@ static const struct pruss_match_private_data am437x_match_data[] = {
 
 static const struct pruss_private_data am57xx_pruss_priv_data = {
 	.ecap_used = true,
+	.iep_memregion = true,
 };
 
 static const struct pruss_match_private_data am57xx_match_data[] = {
@@ -577,6 +586,7 @@ static const struct pruss_match_private_data am57xx_match_data[] = {
 
 static const struct pruss_private_data k2g_pruss_priv_data = {
 	.ecap_used = true,
+	.iep_memregion = true,
 };
 
 static const struct pruss_match_private_data k2g_match_data[] = {

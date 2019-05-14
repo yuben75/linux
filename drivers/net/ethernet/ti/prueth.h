@@ -469,6 +469,7 @@ enum prueth_mem {
 	PRUETH_MEM_DRAM0 = 0,
 	PRUETH_MEM_DRAM1,
 	PRUETH_MEM_SHARED_RAM,
+	PRUETH_MEM_IEP,
 	PRUETH_MEM_ECAP,
 	PRUETH_MEM_OCMC,
 	PRUETH_MEM_MAX,
@@ -642,7 +643,6 @@ struct prueth {
 	struct pruss_mem_region mem[PRUETH_MEM_MAX];
 	struct gen_pool *sram_pool;
 	struct regmap *mii_rt;
-	struct regmap *iep;
 
 	int fw_drop_untagged_vlan;
 	enum iec62439_3_tr_modes prp_tr_mode;

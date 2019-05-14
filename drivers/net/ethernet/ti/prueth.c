@@ -48,7 +48,7 @@
 
 /* ensure that order of PRUSS mem regions is same as prueth_mem */
 static enum pruss_mem pruss_mem_ids[] = { PRUSS_MEM_DRAM0, PRUSS_MEM_DRAM1,
-					  PRUSS_MEM_SHRD_RAM2,
+					  PRUSS_MEM_SHRD_RAM2, PRUSS_MEM_IEP,
 					  PRUSS_MEM_ECAP};
 
 static int pruss0_ethtype = PRUSS_ETHTYPE_EMAC;
@@ -548,6 +548,8 @@ static void prueth_init_mem(struct prueth *prueth)
 	/* Clear data RAMs */
 	prueth_clearmem(prueth, PRUETH_MEM_DRAM0);
 	prueth_clearmem(prueth, PRUETH_MEM_DRAM1);
+
+	prueth_clearmem(prueth, PRUETH_MEM_IEP);
 }
 
 static int prueth_hostinit(struct prueth *prueth)
@@ -2664,9 +2666,9 @@ static int emac_ndo_open(struct net_device *ndev)
 		}
 
 		/* Enable IEP Counter */
-		regmap_update_bits(prueth->iep, PRUSS_IEP_GLOBAL_CFG,
-			   PRUSS_IEP_GLOBAL_CFG_CNT_ENABLE,
-			   PRUSS_IEP_GLOBAL_CFG_CNT_ENABLE);
+		prueth_set_reg(prueth, PRUETH_MEM_IEP, 0,
+			       IEP_GLOBAL_CFG_REG_MASK,
+			       IEP_GLOBAL_CFG_REG_DEF_VAL);
 
 		/* Set VLAN filter table offsets */
 		if (PRUETH_IS_EMAC(prueth)) {
@@ -4067,12 +4069,6 @@ static int prueth_probe(struct platform_device *pdev)
 	prueth->mii_rt = syscon_regmap_lookup_by_phandle(np, "mii-rt");
 	if (IS_ERR(prueth->mii_rt)) {
 		dev_err(dev, "couldn't get mii-rt syscon regmap\n");
-		return -ENODEV;
-	}
-
-	prueth->iep = syscon_regmap_lookup_by_phandle(np, "iep");
-	if (IS_ERR(prueth->iep)) {
-		dev_err(dev, "couldn't get iep syscon regmap\n");
 		return -ENODEV;
 	}
 
