@@ -27,6 +27,7 @@
 #include <linux/swork.h>
 #endif
 #include "icss_switch.h"
+#include "icss_time_sync.h"
 
 /* ECAP registers */
 #define ECAP_TSCTR                      0
@@ -401,6 +402,7 @@ enum pruss_ethtype {
 
 #define MS_TO_NS(msec)		((msec) * 1000 * 1000)
 #define PRUETH_RED_TABLE_CHECK_PERIOD_MS	10
+#define PRUETH_HAS_PTP(p)       PRUETH_HAS_PRP(p)
 /* A group of PCPs are mapped to a Queue. This is the size of firmware
  * array in shared memory
  */
@@ -516,10 +518,17 @@ struct prueth_private_data {
 	enum fw_revision fw_rev;
 };
 
+struct tx_ev_cb_data {
+	struct sk_buff *skb;
+	unsigned long tmo;
+};
+
 /* data for each emac port */
 struct prueth_emac {
 	struct prueth *prueth;
 	struct net_device *ndev;
+	struct tx_ev_cb_data tx_ev_cb[PTP_PDLY_RSP_MSG_ID + 1];
+	spinlock_t ev_msg_lock;
 	u8 mac_addr[6];
 	u32 msg_enable;
 
@@ -543,6 +552,11 @@ struct prueth_emac {
 	struct prueth_queue_desc __iomem *tx_queue_descs;
 	struct prueth_queue_desc __iomem *tx_colq_descs;
 
+#ifdef CONFIG_PREEMPT_RT_FULL
+	struct swork_event ptp_tx_work_event;
+#else
+	struct work_struct ptp_tx_work_event;
+#endif
 	struct port_statistics stats; /* stats holder when i/f is down */
 	u32 tx_collisions;
 	u32 tx_collision_drops;
@@ -565,6 +579,9 @@ struct prueth_emac {
 #ifdef CONFIG_SYSFS
 	struct device_attribute nsp_credit_attr;
 #endif
+	int ptp_tx_enable;
+	int ptp_rx_enable;
+	int ptp_tx_irq;
 
 	u32 rx_int_pacing_offset;
 	unsigned int rx_pacing_timeout;
@@ -667,6 +684,7 @@ struct prueth {
 	struct prueth_mmap_ocmc_cfg mmap_ocmc_cfg;
 	struct lre_statistics lre_stats;
 	struct emac_statistics emac_stats;
+	struct iep *iep;
 	/* To provide a synchronization point to wait before proceed to port
 	 * specific initialization or configuration. This is needed when
 	 * concurrent device open happens.
