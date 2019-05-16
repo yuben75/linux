@@ -548,6 +548,8 @@ struct prueth_emac {
 
 	int rx_irq;
 	int tx_irq;
+	int rx_lp_irq;
+	int rx_hp_irq;
 
 	struct prueth_queue_desc __iomem *rx_queue_descs;
 	struct prueth_queue_desc __iomem *tx_queue_descs;
@@ -643,6 +645,11 @@ struct prueth_mmap_ocmc_cfg {
 	u16 buffer_offset[PRUETH_PORT_MAX][NUM_QUEUES];
 };
 
+struct prueth_ndev_priority {
+	struct net_device *ndev;
+	int priority;
+};
+
 /**
  * struct prueth - PRUeth structure
  * @dev: device
@@ -666,6 +673,7 @@ struct prueth {
 	struct rproc *pru0, *pru1;
 	struct pruss_mem_region mem[PRUETH_MEM_MAX];
 	struct gen_pool *sram_pool;
+	struct prueth_ndev_priority *hp, *lp;
 	struct regmap *mii_rt;
 
 	int fw_drop_untagged_vlan;
@@ -685,6 +693,7 @@ struct prueth {
 	unsigned int node_table_clear;
 	unsigned int node_table_clear_last_cmd;
 	unsigned int tbl_check_mask;
+	unsigned int priority_ts;
 	struct hrtimer tbl_check_timer;
 	struct prueth_mmap_port_cfg_basis mmap_port_cfg_basis[PRUETH_PORT_MAX];
 	struct prueth_mmap_sram_cfg mmap_sram_cfg;
