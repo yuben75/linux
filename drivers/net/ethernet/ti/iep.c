@@ -932,6 +932,22 @@ int iep_tx_timestamp(struct iep *iep, u16 ts_ofs, struct sk_buff *skb,
 	return 0;
 }
 
+int iep_get_timestamp(struct iep *iep, u16 ts_ofs, u64 *ns)
+{
+	u64 cycles;
+
+	/* get timestamp */
+	cycles = iep->iep_get_timestamp_cycles(iep, ts_ofs);
+
+	if (!cycles) {
+		*ns = 0;
+		return -ENOENT;
+	}
+
+	*ns = timecounter_cyc2time(&iep->tc, cycles);
+	return 0;
+}
+
 static int iep_dram_init(struct iep *iep)
 {
 	void __iomem *sram = iep->sram;
@@ -1032,8 +1048,14 @@ static inline void iep_start(struct iep *iep)
 
 static inline void iep_time_sync_start(struct iep *iep)
 {
-	/* disable fw background task */
-	writeb(0, iep->sram + TIMESYNC_CTRL_VAR_OFFSET);
+	u8 val = 0;
+
+	/* Disable fw background task for both HSR/PRP. */
+	val &= ~TIMESYNC_CTRL_BG_ENABLE;
+	/* Enable forced 2-step for HSR. No effect on PRP */
+	val |= TIMESYNC_CTRL_FORCED_2STEP;
+
+	writeb(val, iep->sram + TIMESYNC_CTRL_VAR_OFFSET);
 	iep->ptp_tx_enable = TIMESYNC_ENABLE;
 	iep->ptp_rx_enable = TIMESYNC_ENABLE;
 }
