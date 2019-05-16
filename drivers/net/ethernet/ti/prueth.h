@@ -402,7 +402,8 @@ enum pruss_ethtype {
 
 #define MS_TO_NS(msec)		((msec) * 1000 * 1000)
 #define PRUETH_RED_TABLE_CHECK_PERIOD_MS	10
-#define PRUETH_HAS_PTP(p)       (PRUETH_HAS_PRP(p) || PRUETH_HAS_HSR(p))
+#define PRUETH_HAS_PTP(p) \
+	(PRUETH_HAS_PRP(p) || PRUETH_HAS_HSR(p) || PRUETH_IS_EMAC(p))
 /* A group of PCPs are mapped to a Queue. This is the size of firmware
  * array in shared memory
  */
@@ -581,7 +582,8 @@ struct prueth_emac {
 #endif
 	int ptp_tx_enable;
 	int ptp_rx_enable;
-	int ptp_tx_irq;
+	int emac_ptp_tx_irq;
+	int hsrprp_ptp_tx_irq;
 
 	struct tx_ev_cb_data  ct_evt_cb[PTP_DLY_REQ_MSG_ID + 1];
 	spinlock_t            ct_lock; /* serialize accesses to ct_ev_msg[] */
