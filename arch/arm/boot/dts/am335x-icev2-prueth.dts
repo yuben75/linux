@@ -33,6 +33,8 @@
 		mii-rt = <&pruss_mii_rt>;
 		pinctrl-0 = <&pruss_eth_default>;
 		pinctrl-names = "default";
+		interrupts = <20>, <21>;
+		interrupt-names = "rx_red_hp", "rx_red_lp";
 
 		pruss_emac0: ethernet-mii0 {
 			phy-handle = <&pruss_eth0_phy>;

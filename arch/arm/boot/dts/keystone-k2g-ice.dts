@@ -241,6 +241,8 @@
 		sram = <&msm_ram>;
 		interrupt-parent = <&pruss0_intc>;
 		mii-rt = <&pruss0_mii_rt>;
+		interrupts = <20>, <21>;
+		interrupt-names = "rx_red_hp", "rx_red_lp";
 
 		pruss0_emac0: ethernet-mii0 {
 			phy-handle = <&pruss0_eth0_phy>;
@@ -274,6 +276,8 @@
 		sram = <&msm_ram>;
 		interrupt-parent = <&pruss1_intc>;
 		mii-rt = <&pruss1_mii_rt>;
+		interrupts = <20>, <21>;
+		interrupt-names = "rx_red_hp", "rx_red_lp";
 
 		pruss1_emac0: ethernet-mii0 {
 			phy-handle = <&pruss1_eth0_phy>;

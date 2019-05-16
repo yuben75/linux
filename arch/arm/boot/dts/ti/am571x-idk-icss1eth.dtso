@@ -31,6 +31,8 @@
 			sram = <&ocmcram1>;
 			interrupt-parent = <&pruss1_intc>;
 			mii-rt = <&pruss1_mii_rt>;
+			interrupts = <20>, <21>;
+			interrupt-names = "rx_red_hp", "rx_red_lp";
 
 			ethernet-mii0 {
 				phy-handle = <&pruss1_eth0_phy>;
