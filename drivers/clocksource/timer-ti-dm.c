@@ -194,7 +194,7 @@ static int omap_dm_timer_set_source(struct omap_dm_timer *timer, int source)
 	return ret;
 }
 
-static void omap_dm_timer_enable(struct omap_dm_timer *timer)
+void omap_dm_timer_enable(struct omap_dm_timer *timer)
 {
 	int c;
 
@@ -213,7 +213,7 @@ static void omap_dm_timer_enable(struct omap_dm_timer *timer)
 	}
 }
 
-static void omap_dm_timer_disable(struct omap_dm_timer *timer)
+void omap_dm_timer_disable(struct omap_dm_timer *timer)
 {
 	pm_runtime_put_sync(&timer->pdev->dev);
 }
@@ -351,12 +351,12 @@ found:
 	return timer;
 }
 
-static struct omap_dm_timer *omap_dm_timer_request(void)
+struct omap_dm_timer *omap_dm_timer_request(void)
 {
 	return _omap_dm_timer_request(REQUEST_ANY, NULL);
 }
 
-static struct omap_dm_timer *omap_dm_timer_request_specific(int id)
+struct omap_dm_timer *omap_dm_timer_request_specific(int id)
 {
 	/* Requesting timer by ID is not supported when device tree is used */
 	if (of_have_populated_dt()) {
@@ -389,7 +389,7 @@ struct omap_dm_timer *omap_dm_timer_request_by_cap(u32 cap)
  * Request a timer based upon a device node pointer. Returns pointer to
  * timer handle on success and a NULL pointer on failure.
  */
-static struct omap_dm_timer *omap_dm_timer_request_by_node(struct device_node *np)
+struct omap_dm_timer *omap_dm_timer_request_by_node(struct device_node *np)
 {
 	if (!np)
 		return NULL;
@@ -397,7 +397,7 @@ static struct omap_dm_timer *omap_dm_timer_request_by_node(struct device_node *n
 	return _omap_dm_timer_request(REQUEST_BY_NODE, np);
 }
 
-static int omap_dm_timer_free(struct omap_dm_timer *timer)
+int omap_dm_timer_free(struct omap_dm_timer *timer)
 {
 	if (unlikely(!timer))
 		return -EINVAL;
