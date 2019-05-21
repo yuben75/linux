@@ -201,6 +201,8 @@
 		compatible = "ti,omap4-dpll-m4xen-clock";
 		clocks = <&abe_dpll_clk_mux>, <&abe_dpll_bypass_clk_mux>;
 		reg = <0x01e0>, <0x01e4>, <0x01ec>, <0x01e8>;
+		assigned-clocks = <&dpll_abe_ck>;
+		assigned-clock-rates = <50000000>;
 	};
 
 	dpll_abe_x2_ck: dpll_abe_x2_ck {

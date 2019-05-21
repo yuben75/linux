@@ -1037,6 +1037,8 @@
 			ti,hwmods = "timer16";
 			clocks = <&l4per_clkctrl DRA7_TIMER16_CLKCTRL 24>;
 			clock-names = "fck";
+			assigned-clocks = <&l4per_clkctrl DRA7_TIMER16_CLKCTRL 24>;
+			assigned-clock-parents = <&abe_giclk_div>;
 		};
 
 		wdt2: wdt@4ae14000 {
