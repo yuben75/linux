@@ -339,4 +339,14 @@
 #define P0_COL_BUFFER_OFFSET    0xEE00
 #define P0_Q1_BUFFER_OFFSET	0x0000
 
+/* The below bit will be set in BD for EMAC mode in the egress
+ * direction and reset for PRP mode
+ */
+#define PRUETH_TX_PRP_EMAC_MODE	BIT(0)
+
+/* 1 byte | 0 : Interrupt Pacing disabled | 1 : Interrupt Pacing enabled */
+#define INTR_PAC_STATUS_OFFSET_PRU1             0x1FAE
+/* 1 byte | 0 : Interrupt Pacing disabled | 1 : Interrupt Pacing enabled */
+#define INTR_PAC_STATUS_OFFSET_PRU0             0x1FAF
+
 #endif /* __ICSS_SWITCH_H */

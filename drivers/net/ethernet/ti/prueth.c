@@ -1863,6 +1863,14 @@ static int prueth_tx_enqueue(struct prueth_emac *emac, struct sk_buff *skb,
 	if (PRUETH_HAS_HSR(prueth))
 		wr_buf_desc |= BIT(PRUETH_BD_HSR_FRAME_SHIFT);
 
+	/* Set bit0 to indicate EMAC mode when using PRP firmware */
+	if (PRUETH_HAS_PRP(prueth)) {
+		if (emac->prp_emac_mode)
+			wr_buf_desc |= PRUETH_TX_PRP_EMAC_MODE;
+		else
+			wr_buf_desc &= ~PRUETH_TX_PRP_EMAC_MODE;
+	}
+
 	if (PRUETH_HAS_SWITCH(prueth))
 		writel(wr_buf_desc, sram + bd_wr_ptr);
 	else
@@ -2032,7 +2040,7 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 	 */
 	if (PRUETH_HAS_RED(prueth) &&
 	    (!pkt_info.lookup_success || fw_data->fw_rev == FW_REV_V1_0)) {
-		if (PRUETH_HAS_PRP(prueth)) {
+		if (PRUETH_HAS_PRP(prueth) && !emac->prp_emac_mode) {
 			memcpy(macid,
 			       ((pkt_info.sv_frame) ?
 				nt_dst_addr + SV_FRAME_OFFSET + offset :

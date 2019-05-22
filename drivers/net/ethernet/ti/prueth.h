@@ -555,6 +555,7 @@ struct prueth_emac {
 	struct prueth_queue_desc __iomem *tx_queue_descs;
 	struct prueth_queue_desc __iomem *tx_colq_descs;
 
+	unsigned int prp_emac_mode;
 #ifdef CONFIG_PREEMPT_RT_FULL
 	struct swork_event ptp_tx_work_event;
 #else
@@ -581,6 +582,7 @@ struct prueth_emac {
 #endif
 #ifdef CONFIG_SYSFS
 	struct device_attribute nsp_credit_attr;
+	struct device_attribute prp_emac_mode_attr;
 #endif
 	int ptp_tx_enable;
 	int ptp_rx_enable;
