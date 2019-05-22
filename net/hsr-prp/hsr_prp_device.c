@@ -996,8 +996,12 @@ int hsr_prp_dev_finalize(struct net_device *hsr_prp_dev,
 	 */
 	if (priv->rx_offloaded &&
 	    !ether_addr_equal(slave[0]->dev_addr,
-			      slave[1]->dev_addr))
+			      slave[1]->dev_addr)) {
+		netdev_err(hsr_prp_dev,
+			   "Slave's MAC addr must be same. So change it\n");
+		res = -EINVAL;
 		goto fail;
+	}
 
 	res = hsr_prp_create_procfs(priv, hsr_prp_dev);
 	if (res)
