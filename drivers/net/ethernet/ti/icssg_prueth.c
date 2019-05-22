@@ -28,6 +28,7 @@
 #include <linux/soc/ti/k3-navss-desc-pool.h>
 
 #include "icssg_prueth.h"
+#include "icss_mii_rt.h"
 
 #define PRUETH_MODULE_VERSION "0.1"
 #define PRUETH_MODULE_DESCRIPTION "PRUSS ICSSG Ethernet driver"
@@ -85,13 +86,17 @@ module_param(debug_level, int, 0644);
 MODULE_PARM_DESC(debug_level, "PRUETH debug level (NETIF_MSG bits)");
 
 static void prueth_cleanup_rx_chns(struct prueth_emac *emac,
-				   struct prueth_rx_chn *rx_chn)
+				   struct prueth_rx_chn *rx_chn,
+				   int max_rflows)
 {
-	if (rx_chn->irq)
-		k3_nav_udmax_rx_put_irq(rx_chn->rx_chn, 0);
+	int i;
 
-	if (rx_chn->rx_chn)
+	if (rx_chn->rx_chn) {
+		for (i = 0; i < max_rflows; i++)
+			k3_nav_udmax_rx_put_irq(rx_chn->rx_chn, i);
+
 		k3_nav_udmax_release_rx_chn(rx_chn->rx_chn);
+	}
 
 	if (rx_chn->desc_pool)
 		k3_knav_pool_destroy(rx_chn->desc_pool);
@@ -205,6 +210,7 @@ static int prueth_init_rx_chns(struct prueth_emac *emac,
 	rx_cfg.flow_id_base = -1; /* udmax will auto select flow id base */
 
 	/* init all flows */
+	rx_chn->dev = dev;
 	rx_chn->descs_num = max_desc_num;
 	spin_lock_init(&rx_chn->lock);
 	rx_chn->desc_pool = k3_knav_pool_create_name(dev, rx_chn->descs_num,
@@ -279,7 +285,7 @@ static int prueth_init_rx_chns(struct prueth_emac *emac,
 	return 0;
 
 fail:
-	prueth_cleanup_rx_chns(emac, rx_chn);
+	prueth_cleanup_rx_chns(emac, rx_chn, max_rflows);
 	return ret;
 }
 
@@ -410,8 +416,7 @@ static int emac_rx_packet(struct prueth_emac *emac, u32 flow_id)
 
 static void prueth_rx_cleanup(void *data, dma_addr_t desc_dma)
 {
-	struct prueth_emac *emac = data;
-	struct prueth_rx_chn *rx_chn = &emac->rx_chns;
+	struct prueth_rx_chn *rx_chn = data;
 	struct cppi5_host_desc_t *desc_rx;
 	struct sk_buff *skb;
 	dma_addr_t buf_dma;
@@ -423,7 +428,7 @@ static void prueth_rx_cleanup(void *data, dma_addr_t desc_dma)
 	skb = *swdata;
 	cppi5_hdesc_get_obuf(desc_rx, &buf_dma, &buf_dma_len);
 
-	dma_unmap_single(emac->prueth->dev, buf_dma, buf_dma_len,
+	dma_unmap_single(rx_chn->dev, buf_dma, buf_dma_len,
 			 DMA_FROM_DEVICE);
 	k3_knav_pool_free(rx_chn->desc_pool, desc_rx);
 
@@ -932,8 +937,11 @@ static void emac_adjust_link(struct net_device *ndev)
 {
 	struct prueth_emac *emac = netdev_priv(ndev);
 	struct phy_device *phydev = emac->phydev;
-	unsigned long flags;
+	bool gig_en = false, full_duplex = false;
+	struct prueth *prueth = emac->prueth;
+	int slice = prueth_emac_slice(emac);
 	bool new_state = false;
+	unsigned long flags;
 
 	spin_lock_irqsave(&emac->lock, flags);
 
@@ -956,17 +964,39 @@ static void emac_adjust_link(struct net_device *ndev)
 		emac->link = 0;
 		/* defaults for no link */
 
-		/* f/w should support 10, 100 & 1000 */
+		/* f/w should support 100 & 1000 */
 		emac->speed = SPEED_1000;
 
 		/* half duplex may not be supported by f/w */
 		emac->duplex = DUPLEX_FULL;
 	}
 
-	/* FIXME: Do we need to update PHY status to Firmware? */
-
-	if (new_state)
+	if (new_state) {
 		phy_print_status(phydev);
+
+		/* update RGMII and MII configuration based on PHY negotiated
+		 * values
+		 */
+		if (emac->link) {
+			if (phydev->speed == SPEED_1000)
+				gig_en = true;
+
+			if (phydev->duplex == DUPLEX_FULL)
+				full_duplex = true;
+
+			/* Set the RGMII cfg for gig en and full duplex */
+			icssg_update_rgmii_cfg(prueth->miig_rt, gig_en,
+					       full_duplex, slice);
+			/* update the Tx IPG based on 100M/1G speed */
+			icssg_update_mii_rt_cfg(prueth->mii_rt, emac->speed,
+						slice);
+		} else {
+			icssg_update_rgmii_cfg(prueth->miig_rt, true, true,
+					       emac->port_id);
+			icssg_update_mii_rt_cfg(prueth->mii_rt, emac->speed,
+						slice);
+		}
+	}
 
 	if (emac->link) {
 		/* link ON */
@@ -1166,9 +1196,10 @@ free_rx_irq:
 free_tx_irq:
 	free_irq(emac->tx_chns.irq, emac);
 cleanup_rx_mgm:
-	prueth_cleanup_rx_chns(emac, &emac->rx_mgm_chn);
+	prueth_cleanup_rx_chns(emac, &emac->rx_mgm_chn,
+			       PRUETH_MAX_RX_MGM_FLOWS);
 cleanup_rx:
-	prueth_cleanup_rx_chns(emac, &emac->rx_chns);
+	prueth_cleanup_rx_chns(emac, &emac->rx_chns, PRUETH_MAX_RX_FLOWS);
 cleanup_tx:
 	prueth_cleanup_tx_chns(emac);
 
@@ -1185,7 +1216,7 @@ static int emac_ndo_stop(struct net_device *ndev)
 {
 	struct prueth_emac *emac = netdev_priv(ndev);
 	struct prueth *prueth = emac->prueth;
-	int ret;
+	int ret, i;
 
 	/* inform the upper layers. */
 	netif_stop_queue(ndev);
@@ -1209,9 +1240,21 @@ static int emac_ndo_stop(struct net_device *ndev)
 	/* TODO: send shutdown command */
 
 	k3_nav_udmax_tdown_rx_chn(emac->rx_chns.rx_chn, true);
-	k3_nav_udmax_reset_rx_chn(emac->rx_chns.rx_chn, 0, emac,
-				  prueth_rx_cleanup, 0);
+	for (i = 0; i < PRUETH_MAX_RX_FLOWS; i++)
+		k3_nav_udmax_reset_rx_chn(emac->rx_chns.rx_chn, i,
+					  &emac->rx_chns,
+					  prueth_rx_cleanup, !!i);
+
 	k3_nav_udmax_disable_rx_chn(emac->rx_chns.rx_chn);
+
+	/* Teardown RX MGM channel */
+	k3_nav_udmax_tdown_rx_chn(emac->rx_mgm_chn.rx_chn, true);
+	for (i = 0; i < PRUETH_MAX_RX_MGM_FLOWS; i++)
+		k3_nav_udmax_reset_rx_chn(emac->rx_mgm_chn.rx_chn, i,
+					  &emac->rx_mgm_chn,
+					  prueth_rx_cleanup, !!i);
+
+	k3_nav_udmax_disable_rx_chn(emac->rx_mgm_chn.rx_chn);
 
 	napi_disable(&emac->napi_tx);
 	napi_disable(&emac->napi_rx);
@@ -1222,11 +1265,13 @@ static int emac_ndo_stop(struct net_device *ndev)
 	/* stop PRUs */
 	prueth_emac_stop(emac);
 
+	free_irq(emac->rx_mgm_chn.irq, emac);
 	free_irq(emac->rx_chns.irq, emac);
 	free_irq(emac->tx_chns.irq, emac);
 
-	prueth_cleanup_rx_chns(emac, &emac->rx_mgm_chn);
-	prueth_cleanup_rx_chns(emac, &emac->rx_chns);
+	prueth_cleanup_rx_chns(emac, &emac->rx_mgm_chn,
+			       PRUETH_MAX_RX_MGM_FLOWS);
+	prueth_cleanup_rx_chns(emac, &emac->rx_chns, PRUETH_MAX_RX_FLOWS);
 	prueth_cleanup_tx_chns(emac);
 
 	if (netif_msg_drv(emac))
@@ -1672,6 +1717,12 @@ static int prueth_probe(struct platform_device *pdev)
 	prueth->miig_rt = syscon_regmap_lookup_by_phandle(np, "mii-g-rt");
 	if (IS_ERR(prueth->miig_rt)) {
 		dev_err(dev, "couldn't get mii-g-rt syscon regmap\n");
+		return -ENODEV;
+	}
+
+	prueth->mii_rt = syscon_regmap_lookup_by_phandle(np, "mii-rt");
+	if (IS_ERR(prueth->mii_rt)) {
+		dev_err(dev, "couldn't get mii-rt syscon regmap\n");
 		return -ENODEV;
 	}
 
