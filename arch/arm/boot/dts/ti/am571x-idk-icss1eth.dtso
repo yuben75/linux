@@ -20,7 +20,7 @@
 		};
 
 		/* Dual mac ethernet application node on icss1 */
-		pruss1_eth {
+		pruss1_eth: pruss1_eth {
 			status = "okay";
 			compatible = "ti,am57-prueth";
 			prus = <&pru1_0>, <&pru1_1>;
