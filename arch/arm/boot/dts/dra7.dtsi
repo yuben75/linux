@@ -1266,9 +1266,10 @@
 				pruss1_mem: memories@4b200000 {
 					reg = <0x4b200000 0x2000>,
 					      <0x4b202000 0x2000>,
-					      <0x4b210000 0x8000>;
+					      <0x4b210000 0x8000>,
+					      <0x4b230000 0x60>;
 					reg-names = "dram0", "dram1",
-						    "shrdram2";
+						    "shrdram2", "ecap";
 				};
 
 				pruss1_cfg: cfg@4b226000 {
@@ -1361,9 +1362,10 @@
 				pruss2_mem: memories@4b280000 {
 					reg = <0x4b280000 0x2000>,
 					      <0x4b282000 0x2000>,
-					      <0x4b290000 0x8000>;
+					      <0x4b290000 0x8000>,
+					      <0x4b2b0000 0x60>;
 					reg-names = "dram0", "dram1",
-						    "shrdram2";
+						    "shrdram2", "ecap";
 				};
 
 				pruss2_cfg: cfg@4b2a6000 {
