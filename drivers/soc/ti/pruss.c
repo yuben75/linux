@@ -25,6 +25,8 @@
  */
 struct pruss_private_data {
 	bool has_no_sharedram;
+	bool ecap_used;
+	bool iep_memregion;
 };
 
 /**
@@ -40,18 +42,23 @@ struct pruss_match_private_data {
 /**
  * pruss_get() - get the pruss for a given PRU remoteproc
  * @rproc: remoteproc handle of a PRU instance
+ * @pruss_id: integer pointer to fill in the pruss instance id
  *
  * Finds the parent pruss device for a PRU given the @rproc handle of the
- * PRU remote processor. This function increments the pruss device's refcount,
- * so always use pruss_put() to decrement it back once pruss isn't needed
- * anymore.
+ * PRU remote processor. The function will also returns the PRUSS instance id
+ * to requestors if @pruss_id is provided. This can be used by PRU client
+ * drivers to distinguish between multiple PRUSS instances, and build some
+ * customization around a specific PRUSS instance.
+
+ * This function increments the pruss device's refcount, so always use
+ * pruss_put() to decrement it back once pruss isn't needed anymore.
  *
  * Returns the pruss handle on success, and an ERR_PTR on failure using one
  * of the following error values
  *    -EINVAL if invalid parameter
  *    -ENODEV if PRU device or PRUSS device is not found
  */
-struct pruss *pruss_get(struct rproc *rproc)
+struct pruss *pruss_get(struct rproc *rproc, int *pruss_id)
 {
 	struct pruss *pruss;
 	struct device *dev;
@@ -75,6 +82,9 @@ struct pruss *pruss_get(struct rproc *rproc)
 		return ERR_PTR(-ENODEV);
 
 	get_device(pruss->dev);
+	if (pruss_id)
+		*pruss_id = pruss->id;
+
 
 	return pruss;
 }
@@ -230,12 +240,38 @@ int pruss_regmap_update(struct pruss *pruss, enum pruss_syscon mod,
 }
 EXPORT_SYMBOL_GPL(pruss_regmap_update);
 
+static int pruss_set_id(struct pruss *pruss)
+{
+	int i;
+	int ret = -EINVAL;
+	static const phys_addr_t addrs[] = { 0x4a300000,
+					     0x54400000, 0x54440000,
+					     0x4b200000, 0x4b280000,
+					     0x20a80000, 0x20ac0000,
+					     0x0b000000, 0x0b100000,
+					     0x0b200000, };
+	static const int ids[] = { 0, 1, 0, 1, 2, 0, 1, 0, 1, 2 };
+
+	for (i = 0; i < ARRAY_SIZE(addrs); i++) {
+		if (pruss->mem_regions[0].pa == addrs[i]) {
+			pruss->id = ids[i];
+			ret = 0;
+			break;
+		}
+	}
+
+	return ret;
+}
+
 static const
 struct pruss_private_data *pruss_get_private_data(struct platform_device *pdev)
 {
 	const struct pruss_match_private_data *data;
 
-	if (!of_device_is_compatible(pdev->dev.of_node, "ti,am4376-pruss"))
+	if (!of_device_is_compatible(pdev->dev.of_node, "ti,am3356-pruss") &&
+	    !of_device_is_compatible(pdev->dev.of_node, "ti,am4376-pruss") &&
+	    !of_device_is_compatible(pdev->dev.of_node, "ti,am5728-pruss") &&
+	    !of_device_is_compatible(pdev->dev.of_node, "ti,k2g-pruss"))
 		return NULL;
 
 	data = of_device_get_match_data(&pdev->dev);
@@ -337,7 +373,8 @@ static int pruss_probe(struct platform_device *pdev)
 	struct resource res;
 	int ret, i, index;
 	const struct pruss_private_data *data;
-	const char *mem_names[PRUSS_MEM_MAX] = { "dram0", "dram1", "shrdram2" };
+	const char *mem_names[PRUSS_MEM_MAX] = { "dram0", "dram1", "shrdram2",
+						 "iep", "ecap" };
 	struct regmap_config syscon_config = syscon_regmap_config;
 
 	if (!node) {
@@ -426,6 +463,14 @@ skip_mux:
 		    !strcmp(mem_names[i], "shrdram2"))
 			continue;
 
+		if ((!data || !data->ecap_used) &&
+		    !strcmp(mem_names[i], "ecap"))
+			continue;
+
+		if ((!data || !data->iep_memregion) &&
+		    !strcmp(mem_names[i], "iep"))
+			continue;
+
 		index = of_property_match_string(np, "reg-names", mem_names[i]);
 		if (index < 0) {
 			of_node_put(np);
@@ -454,6 +499,10 @@ skip_mux:
 	}
 	of_node_put(np);
 
+	ret = pruss_set_id(pruss);
+	if (ret < 0)
+		return ret;
+
 	platform_set_drvdata(pdev, pruss);
 
 	dev_dbg(&pdev->dev, "creating PRU cores and other child platform devices\n");
@@ -475,12 +524,31 @@ static int pruss_remove(struct platform_device *pdev)
 }
 
 /* instance-specific driver private data */
+static const struct pruss_private_data am335x_pruss_priv_data = {
+	.ecap_used = true,
+	.iep_memregion = true,
+};
+
+static const struct pruss_match_private_data am335x_match_data[] = {
+	{
+		.device_name	= "4a300000.pruss",
+		.priv_data	= &am335x_pruss_priv_data,
+	},
+	{
+		/* sentinel */
+	},
+};
+
 static const struct pruss_private_data am437x_pruss1_priv_data = {
 	.has_no_sharedram = false,
+	.ecap_used = true,
+	.iep_memregion = true,
 };
 
 static const struct pruss_private_data am437x_pruss0_priv_data = {
 	.has_no_sharedram = true,
+	.ecap_used = true,
+	.iep_memregion = true,
 };
 
 static const struct pruss_match_private_data am437x_match_data[] = {
@@ -497,11 +565,49 @@ static const struct pruss_match_private_data am437x_match_data[] = {
 	},
 };
 
+static const struct pruss_private_data am57xx_pruss_priv_data = {
+	.ecap_used = true,
+	.iep_memregion = true,
+};
+
+static const struct pruss_match_private_data am57xx_match_data[] = {
+	{
+		.device_name	= "4b200000.pruss",
+		.priv_data	= &am57xx_pruss_priv_data,
+	},
+	{
+		.device_name	= "4b280000.pruss",
+		.priv_data	= &am57xx_pruss_priv_data,
+	},
+	{
+		/* sentinel */
+	},
+};
+
+static const struct pruss_private_data k2g_pruss_priv_data = {
+	.ecap_used = true,
+	.iep_memregion = true,
+};
+
+static const struct pruss_match_private_data k2g_match_data[] = {
+	{
+		.device_name	= "20a80000.pruss",
+		.priv_data	= &k2g_pruss_priv_data,
+	},
+	{
+		.device_name	= "20ac0000.pruss",
+		.priv_data	= &k2g_pruss_priv_data,
+	},
+	{
+		/* sentinel */
+	},
+};
+
 static const struct of_device_id pruss_of_match[] = {
-	{ .compatible = "ti,am3356-pruss", .data = NULL, },
+	{ .compatible = "ti,am3356-pruss", .data = &am335x_match_data, },
 	{ .compatible = "ti,am4376-pruss", .data = &am437x_match_data, },
-	{ .compatible = "ti,am5728-pruss", .data = NULL, },
-	{ .compatible = "ti,k2g-pruss", .data = NULL, },
+	{ .compatible = "ti,am5728-pruss", .data = &am57xx_match_data, },
+	{ .compatible = "ti,k2g-pruss", .data = &k2g_match_data, },
 	{ .compatible = "ti,am654-icssg", .data = NULL, },
 	{ /* sentinel */ },
 };

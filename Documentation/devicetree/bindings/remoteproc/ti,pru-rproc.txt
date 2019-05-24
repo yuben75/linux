@@ -117,8 +117,10 @@ Example:
 			pruss_mem: memories@4a300000 {
 				reg = <0x4a300000 0x2000>,
 				      <0x4a302000 0x2000>,
-				      <0x4a310000 0x3000>;
-				reg-names = "dram0", "dram1", "shrdram2";
+				      <0x4a310000 0x3000>,
+					  <0x4a330000 0x60>;
+				reg-names = "dram0", "dram1",
+						"shrdram2", "ecap";
 			};
 
 			pru0: pru@4a334000 {
