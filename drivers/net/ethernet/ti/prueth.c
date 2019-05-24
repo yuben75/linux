@@ -2246,7 +2246,6 @@ static irqreturn_t red_emac_rx_thread(int irq, void *dev_id)
 	const struct prueth_queue_info *rxqueue_p;
 
 	void *ocmc_ram = (__force void *)emac->prueth->mem[PRUETH_MEM_OCMC].va;
-	int read_block, read_block_o;
 	u32 pkt_ts, pkt_ts_o;
 	u32 iep_wrap, iep_cmp_cfg;
 
@@ -2326,15 +2325,10 @@ static irqreturn_t red_emac_rx_thread(int irq, void *dev_id)
 		parse_packet_info(prueth, rd_buf_desc, &pkt_info);
 		parse_packet_info(prueth, rd_buf_desc_o, &pkt_info_o);
 
-		read_block = (bd_rd_ptr - rxqueue->buffer_desc_offset) /
-			     BD_SIZE;
-		read_block_o = (bd_rd_ptr_o - rxqueue_o->buffer_desc_offset) /
-			       BD_SIZE;
-
 		pkt_ts = readl(ocmc_ram + TIMESTAMP_ARRAY_OFFSET +
-			       (read_block * BD_SIZE));
+			       bd_rd_ptr - SRAM_START_OFFSET);
 		pkt_ts_o = readl(ocmc_ram + TIMESTAMP_ARRAY_OFFSET +
-				 (read_block_o * BD_SIZE));
+				 bd_rd_ptr_o - SRAM_START_OFFSET);
 
 		if (!port0_q_empty && !port1_q_empty) {
 			/* Packets in both port queues */
