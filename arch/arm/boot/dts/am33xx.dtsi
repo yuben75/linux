@@ -960,19 +960,16 @@
 				pruss_mem: memories@4a300000 {
 					reg = <0x4a300000 0x2000>,
 					      <0x4a302000 0x2000>,
-					      <0x4a310000 0x3000>;
+					      <0x4a310000 0x3000>,
+					      <0x4a32e000 0x31c>,
+					      <0x4a330000 0x60>;
 					reg-names = "dram0", "dram1",
-						    "shrdram2";
+						    "shrdram2", "iep", "ecap";
 				};
 
 				pruss_cfg: cfg@4a326000 {
 					compatible = "syscon";
 					reg = <0x4a326000 0x2000>;
-				};
-
-				pruss_iep: iep@4a32e000 {
-					compatible = "syscon";
-					reg = <0x4a32e000 0x31c>;
 				};
 
 				pruss_mii_rt: mii-rt@4a332000 {

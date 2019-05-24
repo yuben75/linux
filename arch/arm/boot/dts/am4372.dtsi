@@ -987,19 +987,16 @@
 				pruss1_mem: memories@54400000 {
 					reg = <0x54400000 0x2000>,
 					      <0x54402000 0x2000>,
-					      <0x54410000 0x8000>;
+					      <0x54410000 0x8000>,
+					      <0x5442e000 0x31c>,
+					      <0x54430000 0x60>;
 					reg-names = "dram0", "dram1",
-						    "shrdram2";
+						    "shrdram2", "iep", "ecap";
 				};
 
 				pruss1_cfg: cfg@54426000 {
 					compatible = "syscon";
 					reg = <0x54426000 0x2000>;
-				};
-
-				pruss1_iep: iep@5442e000 {
-					compatible = "syscon";
-					reg = <0x5442e000 0x31c>;
 				};
 
 				pruss1_mii_rt: mii-rt@54432000 {
@@ -1070,18 +1067,16 @@
 
 				pruss0_mem: memories@54440000 {
 					reg = <0x54440000 0x1000>,
-					      <0x54442000 0x1000>;
-					reg-names = "dram0", "dram1";
+					      <0x54442000 0x1000>,
+					      <0x5446e000 0x31c>,
+					      <0x54470000 0x60>;
+					reg-names = "dram0", "dram1", "iep",
+						    "ecap";
 				};
 
 				pruss0_cfg: cfg@54466000 {
 					compatible = "syscon";
 					reg = <0x54466000 0x2000>;
-				};
-
-				pruss0_iep: iep@5446e000 {
-					compatible = "syscon";
-					reg = <0x6e000 0x31c>;
 				};
 
 				pruss0_mii_rt: mii-rt@54472000 {
