@@ -87,6 +87,30 @@
 			compression = "none";
 			load = <0x83080000>;
 		};
+		fdt@10 {
+			description = "am571x-idk PPS and PTP BC";
+			data = /incbin/("am571x-idk-pps.dtbo");
+			type = "flat_dt";
+			arch = "arm";
+			compression = "none";
+			load = <0x83100000>;
+		};
+		fdt@11 {
+			description = "am572x-idk PPS and PTP BC";
+			data = /incbin/("am572x-idk-pps.dtbo");
+			type = "flat_dt";
+			arch = "arm";
+			compression = "none";
+			load = <0x83080000>;
+		};
+		fdt@12 {
+			description = "am574x-idk PPS and PTP BC";
+			data = /incbin/("am574x-idk-pps.dtbo");
+			type = "flat_dt";
+			arch = "arm";
+			compression = "none";
+			load = <0x83080000>;
+		};
 	};
 
 	configurations {
@@ -106,6 +130,11 @@
 			kernel = "kernel@1";
 			fdt = "fdt@3";
 		};
+		am571x-idk-pps.dtb {
+			description = "am571x-idk 6 port Ethernet plus pps";
+			kernel = "kernel@1";
+			fdt = "fdt@1", "fdt@9", "fdt@10";
+		};
 		am571x-idk-lcd-osd101t2045 {
 			description = "am571x-idk with osd101t2045 LCD";
 			fdt = "fdt@1", "fdt@4", "fdt@5", "fdt@7";
@@ -114,6 +143,11 @@
 			description = "am571x-idk with osd101t2587 LCD";
 			fdt = "fdt@1", "fdt@4", "fdt@5", "fdt@8";
 		};
+		am572x-idk-pps.dtb {
+			description = "am572x-idk 4 port Ethernet plus pps";
+			kernel = "kernel@1";
+			fdt = "fdt@2", "fdt@11";
+		};
 		am572x-idk-lcd-osd101t2045 {
 			description = "am572x-idk with osd101t2045 LCD";
 			fdt = "fdt@2", "fdt@4", "fdt@6", "fdt@7";
@@ -121,6 +155,11 @@
 		am572x-idk-lcd-osd101t2587 {
 			description = "am572x-idk with osd101t2587 LCD";
 			fdt = "fdt@2", "fdt@4", "fdt@6", "fdt@8";
+		};
+		am574x-idk-pps.dtb {
+			description = "am574x-idk 4 port Ethernet plus pps";
+			kernel = "kernel@1";
+			fdt = "fdt@3", "fdt@12";
 		};
 		am574x-idk-lcd-osd101t2587 {
 			description = "am574x-idk with osd101t2587 LCD";

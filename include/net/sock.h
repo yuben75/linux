@@ -1609,12 +1609,14 @@ struct sockcm_cookie {
 	u64 transmit_time;
 	u32 mark;
 	u16 tsflags;
+	struct skb_redundant_info redinfo;
 };
 
 static inline void sockcm_init(struct sockcm_cookie *sockc,
 			       const struct sock *sk)
 {
 	*sockc = (struct sockcm_cookie) { .tsflags = sk->sk_tsflags };
+	memset(&sockc->redinfo, 0, sizeof(sockc->redinfo));
 }
 
 int __sock_cmsg_send(struct sock *sk, struct msghdr *msg, struct cmsghdr *cmsg,
@@ -2332,6 +2334,8 @@ void __sock_recv_timestamp(struct msghdr *msg, struct sock *sk,
 			   struct sk_buff *skb);
 void __sock_recv_wifi_status(struct msghdr *msg, struct sock *sk,
 			     struct sk_buff *skb);
+void __sock_recv_redinfo_timestamp(struct msghdr *msg, struct sock *sk,
+				   struct sk_buff *skb);
 
 static inline void
 sock_recv_timestamp(struct msghdr *msg, struct sock *sk, struct sk_buff *skb)
@@ -2395,6 +2399,31 @@ static inline void sock_tx_timestamp(const struct sock *sk, __u16 tsflags,
 		__sock_tx_timestamp(tsflags, tx_flags);
 	if (unlikely(sock_flag(sk, SOCK_WIFI_STATUS)))
 		*tx_flags |= SKBTX_WIFI_STATUS;
+}
+
+static inline void sock_recv_redundant_info(struct msghdr *msg, struct sock *sk,
+					    struct sk_buff *skb)
+{
+	struct skb_redundant_info *sred;
+
+	sred = skb_redinfo(skb);
+	if (sred->lsdu_size)
+		put_cmsg(msg, SOL_SOCKET, SCM_REDUNDANT, sizeof(*sred), sred);
+
+	__sock_recv_redinfo_timestamp(msg, sk, skb);
+
+}
+
+static inline void sock_tx_redundant_info(const struct sock *sk,
+					  struct skb_redundant_info *redinfo,
+					  struct sk_buff *skb)
+{
+	struct skb_redundant_info *sred;
+
+	if (redinfo->io_port) {
+		sred = skb_redinfo(skb);
+		memcpy(sred, redinfo, sizeof(*sred));
+	}
 }
 
 /**

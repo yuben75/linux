@@ -1913,7 +1913,8 @@ static int prueth_probe(struct platform_device *pdev)
 	/*  prueth->pruss_id is a dummy id for now */
 	pruss[ICSSG0] = pruss_get(eth0_node ?
 				  prueth->pru[ICSSG0][ICSS_SLICE0] :
-				  prueth->pru[ICSSG0][ICSS_SLICE1]);
+				  prueth->pru[ICSSG0][ICSS_SLICE1],
+				  &prueth->pruss_id[ICSSG0]);
 	if (IS_ERR(pruss[ICSSG0])) {
 		ret = PTR_ERR(pruss[ICSSG0]);
 		dev_err(dev, "unable to get pruss handle\n");
@@ -1932,7 +1933,8 @@ static int prueth_probe(struct platform_device *pdev)
 	if (prueth->dual_icssg) {
 		pruss[ICSSG1] = pruss_get(eth0_node ?
 					  prueth->pru[ICSSG1][ICSS_SLICE0] :
-					  prueth->pru[ICSSG1][ICSS_SLICE1]);
+					  prueth->pru[ICSSG1][ICSS_SLICE1],
+					  &prueth->pruss_id[ICSSG1]);
 		if (IS_ERR(pruss[ICSSG1])) {
 			ret = PTR_ERR(pruss[ICSSG1]);
 			dev_err(dev, "unable to get pruss handle\n");

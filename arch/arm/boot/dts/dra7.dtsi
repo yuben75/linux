@@ -1037,6 +1037,8 @@
 			ti,hwmods = "timer16";
 			clocks = <&l4per_clkctrl DRA7_TIMER16_CLKCTRL 24>;
 			clock-names = "fck";
+			assigned-clocks = <&l4per_clkctrl DRA7_TIMER16_CLKCTRL 24>;
+			assigned-clock-parents = <&abe_giclk_div>;
 		};
 
 		wdt2: wdt@4ae14000 {
@@ -1266,19 +1268,16 @@
 				pruss1_mem: memories@4b200000 {
 					reg = <0x4b200000 0x2000>,
 					      <0x4b202000 0x2000>,
-					      <0x4b210000 0x8000>;
+					      <0x4b210000 0x8000>,
+					      <0x4b22e000 0x31c>,
+					      <0x4b230000 0x60>;
 					reg-names = "dram0", "dram1",
-						    "shrdram2";
+						    "shrdram2", "iep", "ecap";
 				};
 
 				pruss1_cfg: cfg@4b226000 {
 					compatible = "syscon";
 					reg = <0x4b226000 0x2000>;
-				};
-
-				pruss1_iep: iep@4b22e000 {
-					compatible = "syscon";
-					reg = <0x4b22e000 0x31c>;
 				};
 
 				pruss1_mii_rt: mii-rt@4b232000 {
@@ -1361,19 +1360,16 @@
 				pruss2_mem: memories@4b280000 {
 					reg = <0x4b280000 0x2000>,
 					      <0x4b282000 0x2000>,
-					      <0x4b290000 0x8000>;
+					      <0x4b290000 0x8000>,
+					      <0x4b2ae000 0x31c>,
+					      <0x4b2b0000 0x60>;
 					reg-names = "dram0", "dram1",
-						    "shrdram2";
+						    "shrdram2", "iep", "ecap";
 				};
 
 				pruss2_cfg: cfg@4b2a6000 {
 					compatible = "syscon";
 					reg = <0x4b2a6000 0x2000>;
-				};
-
-				pruss2_iep: iep@4b2ae000 {
-					compatible = "syscon";
-					reg = <0x4b2ae000 0x31c>;
 				};
 
 				pruss2_mii_rt: mii-rt@4b2b2000 {
