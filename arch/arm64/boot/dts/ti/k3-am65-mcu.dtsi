@@ -341,7 +341,7 @@
 			btcm-enable = <1>;
 			loczrama = <1>;
 			mboxes = <&mailbox0_cluster0 &mbox_mcu_r5fss0_core0>;
-			sram = <&mcu_r5fss0_core0_sram>;
+			sram = <&mcu_r5fss0_core0_sram>, <&msmc_sram1>;
 		};
 
 		mcu_r5fss0_core1: r5f@41400000 {
