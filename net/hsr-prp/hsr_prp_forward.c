@@ -30,17 +30,24 @@ struct hsr_prp_frame_info {
 	struct skb_redundant_info *sred;
 };
 
-static inline int is_hsr_l2ptp(struct sk_buff *skb)
+static inline int is_hsr_l2ptp(struct sk_buff *skb,
+			       struct hsr_prp_frame_info *frame)
 {
 	struct hsr_ethhdr *hsr_ethhdr;
+	unsigned char *pc;
 
-	hsr_ethhdr = (struct hsr_ethhdr *)skb_mac_header(skb);
+	pc = skb_mac_header(skb);
+	if (frame->is_vlan)
+		hsr_ethhdr = (struct hsr_ethhdr *)(pc + VLAN_HLEN);
+	else
+		hsr_ethhdr = (struct hsr_ethhdr *)pc;
 
 	return (hsr_ethhdr->ethhdr.h_proto == htons(ETH_P_HSR) &&
 		hsr_ethhdr->hsr_tag.encap_proto == htons(ETH_P_1588));
 }
 
-static inline int is_hsr_l2ptp_evt(struct sk_buff *skb)
+static inline int is_hsr_l2ptp_evt(struct sk_buff *skb,
+				   struct hsr_prp_frame_info *frame)
 {
 	unsigned char *p;
 
@@ -48,6 +55,8 @@ static inline int is_hsr_l2ptp_evt(struct sk_buff *skb)
 		return 0;
 
 	p = skb->data;
+	if (frame->is_vlan)
+		p += VLAN_HLEN;
 
 	/* FIXME: should use macros to access header fields */
 	return (*(p + 12) == 0x89 && *(p + 13) == 0x2f &&  /* HSR */
@@ -318,7 +327,7 @@ static struct sk_buff *create_tagged_skb(struct sk_buff *skb_o,
 					 struct hsr_prp_port *port)
 {
 	int movelen;
-	unsigned char *dst, *src;
+	unsigned char *dst, *src, *pc;
 	struct sk_buff *skb;
 	struct skb_redundant_info *sred;
 	struct hsr_ethhdr *hsr_ethhdr;
@@ -362,12 +371,14 @@ static struct sk_buff *create_tagged_skb(struct sk_buff *skb_o,
 
 	skb_shinfo(skb)->tx_flags = skb_shinfo(skb_o)->tx_flags;
 	skb->sk = skb_o->sk;
-
 	/* TODO: should check socket option instead? */
-	if (is_hsr_l2ptp(skb)) {
+	if (is_hsr_l2ptp(skb, frame)) {
 		sred = skb_redinfo(skb);
-		/* assumes no vlan */
-		hsr_ethhdr = (struct hsr_ethhdr *)skb_mac_header(skb);
+		pc = skb_mac_header(skb);
+		if (frame->is_vlan)
+			hsr_ethhdr = (struct hsr_ethhdr *)(pc + VLAN_HLEN);
+		else
+			hsr_ethhdr = (struct hsr_ethhdr *)pc;
 		sred->io_port = (PTP_EVT_OUT | BIT(port->type - 1));
 		sred->ethertype = ntohs(hsr_ethhdr->ethhdr.h_proto);
 		s = ntohs(hsr_ethhdr->hsr_tag.path_and_LSDU_size);
@@ -480,6 +491,7 @@ static void stripped_skb_get_shared_info(struct sk_buff *skb_stripped,
 	struct sk_buff *skb_hsr, *skb;
 	struct skb_redundant_info *sred;
 	struct hsr_ethhdr *hsr_ethhdr;
+	unsigned char *pc;
 	u16 s;
 
 	if (port_rcv->priv->prot_version > HSR_V1)
@@ -491,7 +503,7 @@ static void stripped_skb_get_shared_info(struct sk_buff *skb_stripped,
 	skb_hsr = frame->skb_hsr;
 	skb = skb_stripped;
 
-	if (is_hsr_l2ptp_evt(skb_hsr)) {
+	if (is_hsr_l2ptp_evt(skb_hsr, frame)) {
 		/* Rx timestamp */
 		skb_hwtstamps(skb)->hwtstamp = skb_hwtstamps(skb_hsr)->hwtstamp;
 		/* Cut-through tx timestamp */
@@ -499,10 +511,13 @@ static void stripped_skb_get_shared_info(struct sk_buff *skb_stripped,
 			skb_redinfo_hwtstamps(skb_hsr)->hwtstamp;
 	}
 
-	if (is_hsr_l2ptp(skb_hsr)) {
+	if (is_hsr_l2ptp(skb_hsr, frame)) {
 		sred = skb_redinfo(skb);
-		/* assumes no vlan */
-		hsr_ethhdr = (struct hsr_ethhdr *)skb_mac_header(skb_hsr);
+		pc = skb_mac_header(skb);
+		if (frame->is_vlan)
+			hsr_ethhdr = (struct hsr_ethhdr *)(pc + VLAN_HLEN);
+		else
+			hsr_ethhdr = (struct hsr_ethhdr *)pc;
 		sred->io_port = (PTP_MSG_IN | BIT(port_rcv->type - 1));
 		sred->ethertype = ntohs(hsr_ethhdr->ethhdr.h_proto);
 		s = ntohs(hsr_ethhdr->hsr_tag.path_and_LSDU_size);
