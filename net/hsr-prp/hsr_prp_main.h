@@ -199,6 +199,8 @@ static inline void set_prp_LSDU_size(struct prp_rct *rct, u16 LSDU_size)
 
 struct hsr_prp_debug_stats {
 	u32	cnt_tx_sup;
+	u32	cnt_rx_sup_a;
+	u32	cnt_rx_sup_b;
 };
 
 struct hsr_prp_port {
@@ -349,6 +351,8 @@ void hsr_prp_unregister_notifier(u8 proto);
 		(priv)->lre_stats.cnt_own_rx_a++ : \
 		(priv)->lre_stats.cnt_own_rx_b++)
 #define INC_CNT_TX_SUP(priv) ((priv)->dbg_stats.cnt_tx_sup++)
+#define INC_CNT_RX_SUP_A(priv) ((priv)->dbg_stats.cnt_rx_sup_a++)
+#define INC_CNT_RX_SUP_B(priv) ((priv)->dbg_stats.cnt_rx_sup_b++)
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 int hsr_prp_debugfs_init(struct hsr_prp_priv *priv, struct net_device *ndev);
