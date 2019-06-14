@@ -14,12 +14,16 @@
 		#size-cells = <1>;
 		ranges = <0x0 0x0 0x70000000 0x200000>;
 
+		/* WARNING!!! Not All non-reserved memory
+		 * is available for use. For example
+		 * ICSSG PRUETH needs 98K * 3 = 294K.
+		 * So reserve memory below carefully
+		 * after reviewing current usage. One
+		 * way is to check the instances of
+		 * dts nodes pointing to msmc_ram
+		 */
 		atf-sram@0 {
 			reg = <0x0 0x20000>;
-		};
-
-		msmc_sram1: msmc-sram1@20000 {
-			reg = <0x20000 0xd0000>;
 		};
 
 		sysfw-sram@f0000 {
