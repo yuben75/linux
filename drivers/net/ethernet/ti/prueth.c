@@ -4133,6 +4133,8 @@ static void emac_ndo_set_rx_mode(struct net_device *ndev)
 	struct prueth *prueth = emac->prueth;
 	struct prueth_mmap_sram_cfg *s = &prueth->mmap_sram_cfg;
 	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
+	void __iomem *ram = emac->prueth->mem[emac->dram].va;
+	u32 mc_ctrl_byte = prueth->fw_offsets->mc_ctrl_byte;
 	u32 reg, mask;
 
 	if (PRUETH_HAS_RED(prueth))
@@ -4161,6 +4163,8 @@ static void emac_ndo_set_rx_mode(struct net_device *ndev)
 	if (ndev->flags & IFF_PROMISC) {
 		/* Enable promiscuous mode */
 		reg |= mask;
+		/* Disable MC filtering when promiscuous mode enabled */
+		writeb(MULTICAST_FILTER_DISABLED, ram + mc_ctrl_byte);
 	} else {
 		/* Disable promiscuous mode */
 		reg &= ~mask;
