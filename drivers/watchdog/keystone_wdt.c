@@ -99,7 +99,7 @@ static int keystone_wdt_ping(struct watchdog_device *wdd)
 {
 	struct keystone_wdt_device *wdt = watchdog_get_drvdata(wdd);
 
-	pr_debug("%s, %x (%x): jiffies=%lu\n", __func__, wdt, wdt->base,
+	pr_debug("%s, %p (%p): jiffies=%lu\n", __func__, wdt, wdt->base,
 		 jiffies);
 
 	/* put watchdog in service state */

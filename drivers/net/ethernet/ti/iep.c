@@ -1096,6 +1096,9 @@ int iep_register(struct iep *iep)
 					PTP_BC_CLOCK_TYPE_PRUICSS2);
 
 	pr_info("iep ptp bc clkid %d\n", iep->bc_clkid);
+	/* HACK: call the unused ptp_bc API to avoid compiler warning
+	 */
+	ptp_bc_mux_ctrl_register(NULL, NULL, NULL);
 	return 0;
 }
 
