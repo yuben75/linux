@@ -196,9 +196,11 @@ EXPORT_SYMBOL_GPL(ptp_bc_clock_unregister);
 void ptp_bc_mux_ctrl_register(void *ctx, spinlock_t *lock,
 			      ptp_bc_mux_ctrl_handle_t handler)
 {
-	bc_mux_ctrl_handler = handler;
-	bc_mux_ctrl_ctx = ctx;
-	bc_mux_lock = lock;
+	if (ctx && lock && handler) {
+		bc_mux_ctrl_handler = handler;
+		bc_mux_ctrl_ctx = ctx;
+		bc_mux_lock = lock;
+	}
 }
 EXPORT_SYMBOL_GPL(ptp_bc_mux_ctrl_register);
 
