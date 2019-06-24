@@ -11,7 +11,8 @@
 
 &mac {
 	/* cptr pps1 generator and latch properties */
-	timers = <&timer16>, <&timer15>;
+	pps_timer = <&timer16>;
+	latch_timer = <&timer15>;
 	pinctrl-names = "pwm_off", "pwm_on", "ref_off", "ref_on",
 			"latch_on", "latch_off";
 	pinctrl-0 = <&pps1_timer16_pwm_off>;
