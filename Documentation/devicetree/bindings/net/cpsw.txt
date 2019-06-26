@@ -54,6 +54,18 @@ Optional properties:
 - mac-address		: See ethernet.txt file in the same directory
 - phy_id		: Specifies slave phy id (deprecated, use phy-handle)
 - phy-handle		: See ethernet.txt file in the same directory
+- pps_timer		: phandle, referring to the DM timer for PPS generation
+- latch_timer	: phandle, phandle, referring to the DM timer for PPS latch
+- pinctrl-names	: List of assigned state names,
+				  see pinctrl binding documentation.
+- pinctrl-0: phandle, referring to the PPS signal on configuration node.
+- pinctrl-1: phandle, referring to the PPS signal off configuration node.
+- pinctrl-2: phandle, referring to the PPS ref signal on configuration node.
+- pinctrl-3: phandle, referring to the PPS ref signal off configuration node.
+- pinctrl-4: phandle, referring to the PPS latch signal on configuration node.
+- pinctrl-5: phandle, referring to the PPS latch signal off configuration node.
+- pps-enable-gpios	: GPIO specifier, used to enable PPS signal output
+- ref-enable-gpios	: GPIO specifier, used to enable PPS ref signal output
 
 Slave sub-nodes:
 - fixed-link		: See fixed-link.txt file in the same directory
@@ -126,3 +138,22 @@ Examples:
 			mac-address = [ 00 00 00 00 00 00 ];
 		};
 	};
+
+
+(plus)
+&mac {
+	/* cptr pps1 generator and latch properties */
+	pps_timer = <&timer16>;
+	latch_timer = <&timer15>;
+	pinctrl-names = "pwm_off", "pwm_on", "ref_off", "ref_on",
+			"latch_on", "latch_off";
+	pinctrl-0 = <&pps1_timer16_pwm_off>;
+	pinctrl-1 = <&pps1_timer16_pwm_on>;
+	pinctrl-2 = <&pps1_timer16_pwm2_off>;
+	pinctrl-3 = <&pps1_timer16_pwm2_on>;
+	pinctrl-4 = <&pps1_timer15_latch_on>;
+	pinctrl-5 = <&pps1_timer15_latch_off>;
+
+	pps-enable-gpios = <&gpio1 5 GPIO_ACTIVE_HIGH>;
+	ref-enable-gpios = <&gpio6 19 GPIO_ACTIVE_HIGH>;
+};

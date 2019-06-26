@@ -12,7 +12,8 @@
 
 &mac {
 	/* cptr pps1 generator and latch properties */
-	timers = <&timer16>, <&timer15>;
+	pps_timer = <&timer16>;
+	latch_timer = <&timer15>;
 	pinctrl-names = "pwm_off", "pwm_on", "ref_off", "ref_on",
 			"latch_on", "latch_off";
 	pinctrl-0 = <&pps1_timer16_pwm_off>;
@@ -46,7 +47,7 @@
 
 	pps1_timer16_pwm_off: pps1_timer16_pwm_off {
 		pinctrl-single,pins = <
-			DRA7XX_CORE_IOPAD(0x36a0, PIN_OUTPUT | MUX_MODE15)
+			DRA7XX_CORE_IOPAD(0x36a0, PIN_OUTPUT_PULLDOWN | MUX_MODE15)
 		>;
 	};
 
@@ -58,7 +59,7 @@
 
 	pps1_timer16_pwm2_off: pps1_timer16_pwm2_off {
 		pinctrl-single,pins = <
-			DRA7XX_CORE_IOPAD(0x3680, PIN_OUTPUT | MUX_MODE15)
+			DRA7XX_CORE_IOPAD(0x3680, PIN_OUTPUT_PULLDOWN | MUX_MODE15)
 		>;
 	};
 
@@ -82,7 +83,7 @@
 
 	pr2_edc_sync0_off: pr2_edc_sync0_off {
 		pinctrl-single,pins = <
-			DRA7XX_CORE_IOPAD(0x35f8, PIN_OUTPUT | MUX_MODE15)
+			DRA7XX_CORE_IOPAD(0x35f8, PIN_OUTPUT_PULLDOWN | MUX_MODE15)
 		>;
 	};
 
@@ -106,7 +107,7 @@
 
 	pr2_edc_sync1_off: pr2_edc_sync1_off {
 		pinctrl-single,pins = <
-			DRA7XX_CORE_IOPAD(0x35fc, PIN_OUTPUT | MUX_MODE15)
+			DRA7XX_CORE_IOPAD(0x35fc, PIN_OUTPUT_PULLDOWN | MUX_MODE15)
 		>;
 	};
 };
