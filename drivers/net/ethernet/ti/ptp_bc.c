@@ -53,6 +53,10 @@ static void ptp_bc_free_clk_id(int clkid)
 
 static void ptp_bc_clock_pps_mux_reset(void)
 {
+	if (bc_clk_pps_mux_sel0_gpio < 0 ||
+	    bc_clk_pps_mux_sel1_gpio < 0)
+		return;
+
 	if (bc_mux_ctrl_handler) {
 		spin_lock_bh(bc_mux_lock);
 		bc_mux_ctrl_handler(bc_mux_ctrl_ctx, false);
@@ -73,6 +77,10 @@ static void ptp_bc_clock_pps_mux_sel(int clkid)
 		pr_err("%s: invalid clkid: %d\n", __func__, clkid);
 		return;
 	}
+
+	if (bc_clk_pps_mux_sel0_gpio < 0 ||
+	    bc_clk_pps_mux_sel1_gpio < 0)
+		return;
 
 	if (bc_mux_ctrl_handler) {
 		spin_lock_bh(bc_mux_lock);
@@ -207,14 +215,18 @@ EXPORT_SYMBOL_GPL(ptp_bc_mux_ctrl_register);
 static int ptp_bc_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
-	int ret, gpio;
+	int ret = 0, gpio;
 
 	spin_lock_init(&bc_sync_lock);
 	bc_clk_sync_enabled = 0;
 	bc_clocks_registered = 0;
+	bc_clk_pps_mux_sel0_gpio = -1;
+	bc_clk_pps_mux_sel1_gpio = -1;
+	ptp_bc_initialized  = true;
+
 	gpio = of_get_named_gpio(np, "pps-sel0-gpios", 0);
-	if (!gpio_is_valid(bc_clk_pps_mux_sel0_gpio)) {
-		dev_err(&pdev->dev, "failed to parse pps-sel0 gpio\n");
+	if (!gpio_is_valid(gpio)) {
+		dev_dbg(&pdev->dev, "failed to parse pps-sel0 gpio\n");
 		return -EINVAL;
 	}
 
@@ -227,8 +239,8 @@ static int ptp_bc_probe(struct platform_device *pdev)
 	bc_clk_pps_mux_sel0_gpio = gpio;
 
 	gpio = of_get_named_gpio(np, "pps-sel1-gpios", 0);
-	if (!gpio_is_valid(bc_clk_pps_mux_sel1_gpio)) {
-		dev_err(&pdev->dev, "failed to parse pps-sel1 gpio\n");
+	if (!gpio_is_valid(gpio)) {
+		dev_dbg(&pdev->dev, "failed to parse pps-sel1 gpio\n");
 		devm_gpio_free(&pdev->dev, bc_clk_pps_mux_sel0_gpio);
 		return -EINVAL;
 	}
@@ -242,7 +254,6 @@ static int ptp_bc_probe(struct platform_device *pdev)
 	gpio_direction_output(gpio, 0);
 	bc_clk_pps_mux_sel1_gpio = gpio;
 
-	ptp_bc_initialized  = true;
 	return 0;
 }
 
