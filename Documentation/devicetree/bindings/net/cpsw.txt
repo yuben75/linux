@@ -66,6 +66,7 @@ Optional properties:
 - pinctrl-5: phandle, referring to the PPS latch signal off configuration node.
 - pps-enable-gpios	: GPIO specifier, used to enable PPS signal output
 - ref-enable-gpios	: GPIO specifier, used to enable PPS ref signal output
+- cpts_pps_hw_event_index	: Specifies hw push event index for PPS timer <0-3>
 
 Slave sub-nodes:
 - fixed-link		: See fixed-link.txt file in the same directory
