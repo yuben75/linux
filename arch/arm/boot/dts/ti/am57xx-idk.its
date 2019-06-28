@@ -111,6 +111,14 @@
 			compression = "none";
 			load = <0x83080000>;
 		};
+		fdt@13 {
+			description = "AM57xx-evm Jailhouse overlay";
+			data = /incbin/("am57xx-idk-jailhouse.dtbo");
+			type = "flat_dt";
+			arch = "arm";
+			compression = "none";
+			load = <0x83110000>;
+		};
 	};
 
 	configurations {
@@ -164,6 +172,10 @@
 		am574x-idk-lcd-osd101t2587 {
 			description = "am574x-idk with osd101t2587 LCD";
 			fdt = "fdt@3", "fdt@4", "fdt@6", "fdt@8";
+		};
+		jailhouse {
+			description = "Jailhouse";
+			fdt = "fdt@13";
 		};
 	};
 };
