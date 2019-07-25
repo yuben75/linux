@@ -337,7 +337,8 @@ struct prueth_hsr_prp_node {
 #define TX_MIN_IPG		0xb8
 
 #define TX_START_DELAY		0x40
-#define TX_CLK_DELAY		0x6
+#define TX_CLK_DELAY_100M       0x6
+#define TX_CLK_DELAY_10M        0
 
 /* PRUSS local memory map */
 #define ICSS_LOCAL_SHARED_RAM   0x00010000

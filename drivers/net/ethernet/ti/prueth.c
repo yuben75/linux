@@ -938,7 +938,7 @@ static void prueth_mii_init(struct prueth *prueth)
 		       PRUSS_MII_RT_RXCFG_RX_L2_EOF_SCLR_DIS);
 
 	/* Configuration of Port 0 Tx */
-	pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
+	regmap_update_bits(prueth->mii_rt,
 			    PRUSS_MII_RT_TX_IPG0, PRUSS_MII_RT_TX_IPG_IPG_MASK,
 			    TX_MIN_IPG);
 
@@ -955,7 +955,7 @@ static void prueth_mii_init(struct prueth *prueth)
 	prueth_mii_set(TX, 0, START_DELAY_MASK,
 		       TX_START_DELAY << PRUSS_MII_RT_TXCFG_TX_START_DELAY_SHIFT);
 	prueth_mii_set(TX, 0, CLK_DELAY_MASK,
-		       TX_CLK_DELAY << PRUSS_MII_RT_TXCFG_TX_CLK_DELAY_SHIFT);
+		       TX_CLK_DELAY_100M << PRUSS_MII_RT_TXCFG_TX_CLK_DELAY_SHIFT);
 
 	/* Configuration of Port 1 Rx */
 	prueth_mii_set(RX, 1, ENABLE, PRUSS_MII_RT_RXCFG_RX_ENABLE);
@@ -968,7 +968,7 @@ static void prueth_mii_init(struct prueth *prueth)
 		       PRUSS_MII_RT_RXCFG_RX_L2_EOF_SCLR_DIS);
 
 	/* Configuration of Port 1 Tx */
-	pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
+	regmap_update_bits(prueth->mii_rt,
 			    PRUSS_MII_RT_TX_IPG1, PRUSS_MII_RT_TX_IPG_IPG_MASK,
 			    TX_MIN_IPG);
 	prueth_mii_set(TX, 1, ENABLE, PRUSS_MII_RT_TXCFG_TX_ENABLE);
@@ -984,20 +984,20 @@ static void prueth_mii_init(struct prueth *prueth)
 	prueth_mii_set(TX, 1, START_DELAY_MASK,
 		       TX_START_DELAY << PRUSS_MII_RT_TXCFG_TX_START_DELAY_SHIFT);
 	prueth_mii_set(TX, 1, CLK_DELAY_MASK,
-		       TX_CLK_DELAY << PRUSS_MII_RT_TXCFG_TX_CLK_DELAY_SHIFT);
+		       TX_CLK_DELAY_100M << PRUSS_MII_RT_TXCFG_TX_CLK_DELAY_SHIFT);
 
 	/* Min frame length should be set to 64 to allow receive of standard
 	 * Ethernet frames such as PTP, LLDP that will not have the tag/rct.
 	 * Actual size written to register is size - 1 per TRM. This also
 	 * includes CRC/FCS.
 	 */
-	pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
+	regmap_update_bits(prueth->mii_rt,
 			    PRUSS_MII_RT_RX_FRMS0,
 			    PRUSS_MII_RT_RX_FRMS_MIN_FRM_MASK,
 			    (EMAC_MIN_PKTLEN - 1) <<
 			    PRUSS_MII_RT_RX_FRMS_MIN_FRM_SHIFT);
 
-	pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
+	regmap_update_bits(prueth->mii_rt,
 			    PRUSS_MII_RT_RX_FRMS1,
 			    PRUSS_MII_RT_RX_FRMS_MIN_FRM_MASK,
 			    (EMAC_MIN_PKTLEN - 1) <<
@@ -1010,25 +1010,25 @@ static void prueth_mii_init(struct prueth *prueth)
 	 * the values for EMAC case where the max size is 1522.
 	 */
 	if (PRUETH_HAS_RED(prueth)) {
-		pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
+		regmap_update_bits(prueth->mii_rt,
 				    PRUSS_MII_RT_RX_FRMS0,
 				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_MASK,
 				    (PRUETH_MAX_PKTLEN_RED - 1) <<
 				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_SHIFT);
 
-		pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
+		regmap_update_bits(prueth->mii_rt,
 				    PRUSS_MII_RT_RX_FRMS1,
 				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_MASK,
 				    (PRUETH_MAX_PKTLEN_RED - 1) <<
 				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_SHIFT);
 	} else {
-		pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
+		regmap_update_bits(prueth->mii_rt,
 				    PRUSS_MII_RT_RX_FRMS0,
 				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_MASK,
 				    (PRUETH_MAX_PKTLEN_EMAC - 1) <<
 				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_SHIFT);
 
-		pruss_regmap_update(prueth->pruss, PRUSS_SYSCON_MII_RT,
+		regmap_update_bits(prueth->mii_rt,
 				    PRUSS_MII_RT_RX_FRMS1,
 				    PRUSS_MII_RT_RX_FRMS_MAX_FRM_MASK,
 				    (PRUETH_MAX_PKTLEN_EMAC - 1) <<
@@ -1569,6 +1569,7 @@ static void emac_update_phystatus(struct prueth_emac *emac)
 	struct prueth *prueth = emac->prueth;
 	enum prueth_mem region;
 	u32 phy_speed, port_status = 0;
+	u8 delay;
 
 	switch (emac->port_id) {
 	case PRUETH_PORT_MII0:
@@ -1584,6 +1585,19 @@ static void emac_update_phystatus(struct prueth_emac *emac)
 	}
 	phy_speed = emac->speed;
 	prueth_write_reg(prueth, region, PHY_SPEED_OFFSET, phy_speed);
+
+	if (phy_speed == SPEED_10)
+		delay = TX_CLK_DELAY_10M;
+	else
+		delay = TX_CLK_DELAY_100M;
+
+	if (emac->port_id) {
+		prueth_mii_set(TX, 1, CLK_DELAY_MASK,
+			       delay << PRUSS_MII_RT_TXCFG_TX_CLK_DELAY_SHIFT);
+	} else {
+		prueth_mii_set(TX, 0, CLK_DELAY_MASK,
+			       delay << PRUSS_MII_RT_TXCFG_TX_CLK_DELAY_SHIFT);
+	}
 
 	if (emac->duplex == DUPLEX_HALF)
 		port_status |= PORT_IS_HD_MASK;
