@@ -121,6 +121,9 @@ bool ptp_bc_clock_sync_enable(int clkid, int enable)
 	unsigned long flags;
 	bool allow = false;
 
+	if (!ptp_bc_initialized)
+		return true;
+
 	if (clkid < 0 || clkid >= MAX_CLKS)
 		return false;
 
@@ -170,7 +173,7 @@ int ptp_bc_clock_register(int clocktype)
 	int id = -1;
 
 	if (!ptp_bc_initialized) {
-		pr_err("ptp_bc error: NOT initialized.\n");
+		pr_debug("ptp_bc error: NOT initialized.\n");
 		return -1;
 	}
 
@@ -204,6 +207,9 @@ EXPORT_SYMBOL_GPL(ptp_bc_clock_unregister);
 void ptp_bc_mux_ctrl_register(void *ctx, spinlock_t *lock,
 			      ptp_bc_mux_ctrl_handle_t handler)
 {
+	if (!ptp_bc_initialized)
+		return;
+
 	if (ctx && lock && handler) {
 		bc_mux_ctrl_handler = handler;
 		bc_mux_ctrl_ctx = ctx;
