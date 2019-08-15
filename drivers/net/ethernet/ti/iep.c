@@ -1131,7 +1131,7 @@ static int iep_get_pps_extts_pins(struct iep *iep)
 	pins = devm_pinctrl_get(iep->dev);
 	if (IS_ERR(pins)) {
 		iep->pins = NULL;
-		dev_err(iep->dev, "request for sync latch pins failed: %ld\n",
+		dev_dbg(iep->dev, "request for sync latch pins failed: %ld\n",
 			PTR_ERR(pins));
 		return PTR_ERR(pins);
 	}
