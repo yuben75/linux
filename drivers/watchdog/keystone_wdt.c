@@ -184,7 +184,7 @@ static int keystone_wdt_probe(struct platform_device *pdev)
 	wdd->min_timeout = 1;
 	/* Set min heartbeat to 1.1x window size */
 	wdd->min_hw_heartbeat_ms = 11 * DEFAULT_HEARTBEAT * 1000 / 20;
-	wdd->max_hw_heartbeat_ms = MAX_HEARTBEAT;
+	wdd->max_hw_heartbeat_ms = MAX_HEARTBEAT * 1000;
 	wdd->timeout = DEFAULT_HEARTBEAT;
 	wdd->parent = dev;
 
