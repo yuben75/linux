@@ -242,12 +242,12 @@ static int prueth_init_rx_chns(struct prueth_emac *emac,
 
 	if (!strncmp(name, "rxmgm", 5)) {
 		emac->rx_mgm_flow_id_base = k3_nav_udmax_rx_get_flow_id_base(rx_chn->rx_chn);
-		netdev_info(ndev, "mgm flow id base = %d\n",
-			    emac->rx_mgm_flow_id_base);
+		netdev_dbg(ndev, "mgm flow id base = %d\n",
+			   emac->rx_mgm_flow_id_base);
 	} else {
 		emac->rx_flow_id_base = k3_nav_udmax_rx_get_flow_id_base(rx_chn->rx_chn);
-		netdev_info(ndev, "flow id base = %d\n",
-			    emac->rx_flow_id_base);
+		netdev_dbg(ndev, "flow id base = %d\n",
+			   emac->rx_flow_id_base);
 	}
 
 	fdqring_id = K3_RINGACC_RING_ID_ANY;
@@ -1285,6 +1285,7 @@ static int emac_ndo_stop(struct net_device *ndev)
 	netif_stop_queue(ndev);
 
 	/* block packets from wire */
+	phy_stop(emac->phydev);
 	icssg_class_disable(prueth->miig_rt[emac->ingress_icssg],
 			    emac->ingress_slice);
 
@@ -1322,9 +1323,6 @@ static int emac_ndo_stop(struct net_device *ndev)
 
 	napi_disable(&emac->napi_tx);
 	napi_disable(&emac->napi_rx);
-
-	/* stop PHY */
-	phy_stop(emac->phydev);
 
 	/* stop PRUs */
 	prueth_emac_stop(emac, false);
@@ -1469,14 +1467,18 @@ static int emac_get_ts_config(struct net_device *ndev, struct ifreq *ifr)
 
 static int emac_ndo_ioctl(struct net_device *ndev, struct ifreq *ifr, int cmd)
 {
+	struct prueth_emac *emac = netdev_priv(ndev);
+
 	switch (cmd) {
 	case SIOCGHWTSTAMP:
 		return emac_get_ts_config(ndev, ifr);
 	case SIOCSHWTSTAMP:
 		return emac_set_ts_config(ndev, ifr);
 	default:
-		return -EOPNOTSUPP;
+		break;
 	}
+
+	return phy_mii_ioctl(emac->phydev, ifr, cmd);
 }
 
 static const struct net_device_ops emac_netdev_ops = {
