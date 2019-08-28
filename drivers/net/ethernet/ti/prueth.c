@@ -625,16 +625,20 @@ static int pruptp_rx_timestamp(struct prueth_emac *emac, struct sk_buff *skb)
 
 	if ((ts_msgtype != PTP_SYNC_MSG_ID) &&
 	    (ts_msgtype != PTP_PDLY_REQ_MSG_ID) &&
-	    (ts_msgtype != PTP_PDLY_RSP_MSG_ID))
+	    (ts_msgtype != PTP_PDLY_RSP_MSG_ID) &&
+	    (ts_msgtype != PTP_DLY_REQ_MSG_ID) &&
+	    (ts_msgtype != PTP_DLY_RESP_MSG_ID))
 		return -ENOENT;
 
 	/* get the ts location for this port */
 	ts_ofs = RX_SYNC_TIMESTAMP_OFFSET_P1 +
 		 (emac->port_id - 1) * NUM_TS_EVENTS * TS_FIELD_SIZE;
 
-	if (ts_msgtype == PTP_PDLY_REQ_MSG_ID)
+	if (ts_msgtype == PTP_PDLY_REQ_MSG_ID ||
+	    ts_msgtype == PTP_DLY_REQ_MSG_ID)
 		ts_ofs += TS_FIELD_SIZE;
-	else if (ts_msgtype == PTP_PDLY_RSP_MSG_ID)
+	else if (ts_msgtype == PTP_PDLY_RSP_MSG_ID ||
+		 ts_msgtype == PTP_DLY_RESP_MSG_ID)
 		ts_ofs += (2 * TS_FIELD_SIZE);
 
 	ret = iep_rx_timestamp(prueth->iep, ts_ofs, skb);
@@ -1726,10 +1730,20 @@ static inline int emac_tx_ts_enqueue(struct prueth_emac *emac,
 
 	msg_t = pruptp_ts_msgtype(skb);
 
+	/* Treat E2E Delay Req/Resp messages as P2P peer delay req/resp types
+	 * in driver here since firmware stores timestamps in the same memory
+	 * location for either (since they cannot operate simultaneously
+	 * anyway)
+	 */
+	if (msg_t == PTP_DLY_REQ_MSG_ID)
+		msg_t = PTP_PDLY_REQ_MSG_ID;
+	if (msg_t == PTP_DLY_RESP_MSG_ID)
+		msg_t = PTP_PDLY_RSP_MSG_ID;
+
 	if (changed)
 		skb->data -= changed;
 
-	if (msg_t > PTP_PDLY_RSP_MSG_ID) {
+	if (msg_t > PTP_DLY_RESP_MSG_ID) {
 		netdev_err(emac->ndev, "invalid msg_t %u\n", msg_t);
 		return -EINVAL;
 	}

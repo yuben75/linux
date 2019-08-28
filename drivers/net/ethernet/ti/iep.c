@@ -989,6 +989,10 @@ static int iep_dram_init(struct iep *iep)
 
 	/* Configures the setting to Link local frame without HSR tag */
 	writeb(0, sram + LINK_LOCAL_FRAME_HAS_HSR_TAG);
+
+	/* Enable E2E/UDP PTP message timestamping */
+	writeb(1, sram + PTP_IPV4_UDP_E2E_ENABLE);
+
 	return 0;
 }
 
