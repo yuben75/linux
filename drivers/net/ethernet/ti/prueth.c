@@ -4248,7 +4248,7 @@ static int emac_hwtstamp_get(struct net_device *ndev, struct ifreq *ifr)
 	return copy_to_user(ifr->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
 }
 
-static int emac_ndo_ioctl(struct net_device *ndev, struct ifreq *req, int cmd)
+static int emac_ndo_ioctl(struct net_device *ndev, struct ifreq *ifr, int cmd)
 {
 	struct prueth_emac *emac = netdev_priv(ndev);
 
@@ -4260,15 +4260,15 @@ static int emac_ndo_ioctl(struct net_device *ndev, struct ifreq *req, int cmd)
 		if (!PRUETH_HAS_PTP(emac->prueth))
 			return -ENOTSUPP;
 
-		return emac_hwtstamp_set(ndev, req);
+		return emac_hwtstamp_set(ndev, ifr);
 	case SIOCGHWTSTAMP:
 		if (!PRUETH_HAS_PTP(emac->prueth))
 			return -ENOTSUPP;
 
-		return emac_hwtstamp_get(ndev, req);
+		return emac_hwtstamp_get(ndev, ifr);
 	}
 
-	return phy_mii_ioctl(emac->phydev, req, cmd);
+	return phy_mii_ioctl(emac->phydev, ifr, cmd);
 }
 
 static int emac_add_del_vid(struct prueth_emac *emac,
