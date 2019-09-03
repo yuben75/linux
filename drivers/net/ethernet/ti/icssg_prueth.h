@@ -36,11 +36,6 @@
 #define ICSS_SLICE0	0
 #define ICSS_SLICE1	1
 
-/* below used to support 2 icssg per pru port */
-#define ICSSG0		0
-#define ICSSG1		1
-#define NUM_ICSSG	2
-
 #define ICSS_FW_PRU	0
 #define ICSS_FW_RTU	1
 
@@ -116,10 +111,7 @@ struct prueth_emac {
 	struct napi_struct napi_tx;
 	struct napi_struct napi_rx;
 	u32 msg_enable;
-	int egress_icssg;
-	int egress_slice;
-	int ingress_icssg;
-	int ingress_slice;
+
 	int link;
 	int speed;
 	int duplex;
@@ -170,23 +162,21 @@ struct prueth_emac {
  */
 struct prueth {
 	struct device *dev;
-	struct pruss *pruss[NUM_ICSSG];
-	struct rproc *pru[NUM_ICSSG][PRUSS_NUM_PRUS];
-	struct rproc *rtu[NUM_ICSSG][PRUSS_NUM_PRUS];
-	struct pruss_mem_region shram[NUM_ICSSG];
+	struct pruss *pruss;
+	struct rproc *pru[PRUSS_NUM_PRUS];
+	struct rproc *rtu[PRUSS_NUM_PRUS];
+	struct pruss_mem_region shram;
 	struct gen_pool *sram_pool;
-	struct pruss_mem_region msmcram[NUM_ICSSG];
+	struct pruss_mem_region msmcram;
 
 	struct device_node *eth_node[PRUETH_NUM_MACS];
 	struct prueth_emac *emac[PRUETH_NUM_MACS];
 	struct net_device *registered_netdevs[PRUETH_NUM_MACS];
 	const struct prueth_private_data *fw_data;
-	struct icssg_config config[NUM_ICSSG][PRUSS_NUM_PRUS];
-	struct regmap *miig_rt[NUM_ICSSG];
-	struct regmap *mii_rt[NUM_ICSSG];
-	int pruss_id[NUM_ICSSG];
-	/* For boards with dual icss per prueth port, this will be true */
-	bool dual_icssg;
+	int pruss_id;
+	struct icssg_config config[PRUSS_NUM_PRUS];
+	struct regmap *miig_rt;
+	struct regmap *mii_rt;
 };
 
 struct emac_tx_ts_response {
