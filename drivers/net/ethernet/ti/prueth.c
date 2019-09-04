@@ -1466,7 +1466,7 @@ static enum hrtimer_restart prueth_timer(struct hrtimer *timer)
 	enum prueth_mac mac;
 
 	hrtimer_forward_now(timer, ktime_set(0, prueth->tbl_check_period));
-	if (prueth->emac_configured !=
+	if (PRUETH_HAS_RED(prueth) && prueth->emac_configured !=
 		(BIT(PRUETH_PORT_MII0) | BIT(PRUETH_PORT_MII1)))
 		return HRTIMER_RESTART;
 
