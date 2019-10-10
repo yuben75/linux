@@ -5000,6 +5000,17 @@ static int prueth_netdev_init(struct prueth *prueth,
 	emac->ndev = ndev;
 	emac->port_id = port;
 
+	switch (port) {
+	case PRUETH_PORT_MII0:
+		emac->dram = PRUETH_MEM_DRAM0;
+		break;
+	case PRUETH_PORT_MII1:
+		emac->dram = PRUETH_MEM_DRAM1;
+		break;
+	default:
+		return -EINVAL;
+	}
+
 	if (PRUETH_HAS_PTP(prueth) && !PRUETH_IS_EMAC(prueth))
 		tx_int = "hsrprp_ptp_tx";
 	else
