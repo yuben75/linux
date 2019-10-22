@@ -352,6 +352,9 @@ static int cpts_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 
 	spin_lock_irqsave(&cpts->lock, flags);
 	timecounter_adjtime(&cpts->tc, delta);
+#ifdef CONFIG_TI_1PPS_DM_TIMER
+	cpts->ptp_adjusted = true;
+#endif
 	spin_unlock_irqrestore(&cpts->lock, flags);
 
 	return 0;
@@ -383,6 +386,9 @@ static int cpts_ptp_settime(struct ptp_clock_info *ptp,
 
 	spin_lock_irqsave(&cpts->lock, flags);
 	timecounter_init(&cpts->tc, &cpts->cc, ns);
+#ifdef CONFIG_TI_1PPS_DM_TIMER
+	cpts->ptp_adjusted = true;
+#endif
 	spin_unlock_irqrestore(&cpts->lock, flags);
 
 	return 0;
@@ -418,6 +424,8 @@ static int cpts_report_ts_events(struct cpts *cpts)
 				cpts->pps_latch_receive = false;
 			} else {
 				cpts_latch_pps_stop(cpts);
+				pr_info("%s: enter pps_latch INIT state\n"
+					, __func__);
 			}
 #else
 			ptp_clock_event(cpts->clock, &pevent);
@@ -1597,6 +1605,11 @@ static void cpts_tmr_poll(struct cpts *cpts, bool cpts_poll)
 	pr_debug("%s : tmr_cnt2=%u, cpts_ts=%llu\n",
 		 __func__, tmr_count2, cpts_ts);
 
+	if (cpts->ptp_adjusted) {
+		cpts->pps_state = INIT;
+		cpts->ptp_adjusted = false;
+	}
+
 	/* Timer poll state machine */
 	switch (cpts->pps_state) {
 	case INIT:
@@ -1646,6 +1659,20 @@ static void cpts_tmr_poll(struct cpts *cpts, bool cpts_poll)
 			ts_val = (ts_offset >= 50000000UL) ?
 				-(100000000UL - ts_offset) :
 				(ts_offset);
+
+			/* HW_EVENT offset range check:
+			 * There might be large PPS offset change due to
+			 * PTP time adjustment. Switch back to INIT state
+			 */
+			if (abs(ts_val) > 1000000UL) {
+				cpts->pps_state = INIT;
+				pr_info("%s: re-enter INIT state due to large offset %d\n",
+					__func__, ts_val);
+				/* restore the timer period to 100ms */
+				WRITE_TLDR(cpts->odt, tmr_reload_cnt);
+				break;
+			}
+
 			ts_val -= cpts->pps_offset;
 
 			/* restore the timer period to 100ms */
@@ -1682,6 +1709,18 @@ static void cpts_tmr_poll(struct cpts *cpts, bool cpts_poll)
 			ts_val = (ts_offset >= 50000000UL) ?
 				-(100000000UL - ts_offset) :
 				(ts_offset);
+
+			/* HW_EVENT offset range check:
+			 * There might be large PPS offset change due to
+			 * PTP time adjustment. Switch back to INIT state
+			 */
+			if (abs(ts_val) > 1000000UL) {
+				cpts->pps_state = INIT;
+				pr_info("%s: re-enter INIT state due to large offset %d\n",
+					__func__, ts_val);
+				break;
+			}
+
 			ts_val -= cpts->pps_offset;
 			/* tsAjust should include the current error and the
 			 * expected drift for the next two cycles
@@ -1816,6 +1855,8 @@ static void cpts_latch_proc(struct cpts *cpts, u32 latch_cnt)
 				 */
 				cpts_latch_pps_start(cpts);
 				cpts->pps_latch_state = SYNC;
+				pr_info("%s: enter SYNC state\n"
+					, __func__);
 				break;
 			}
 
@@ -1837,6 +1878,8 @@ static void cpts_latch_proc(struct cpts *cpts, u32 latch_cnt)
 		}
 
 		WRITE_TLDR(cpts->odt2, reload_cnt);
+		if (cpts->pps_latch_state == SYNC)
+			pr_info("%s: enter SYNC state\n", __func__);
 		break;
 
 	case ADJUST:
@@ -1853,6 +1896,9 @@ static void cpts_latch_proc(struct cpts *cpts, u32 latch_cnt)
 				 */
 				cpts_latch_pps_stop(cpts);
 				cpts->pps_latch_state = INIT;
+				skip = false;
+				pr_info("%s: re-enter INIT state due to large_offset %d\n"
+					, __func__, offset);
 				break;
 			} else if (offset < CPTS_LATCH_TICK_THRESH_MIN) {
 				reload_cnt -= (CPTS_LATCH_TICK_THRESH_MID -

@@ -160,6 +160,7 @@ struct cpts {
 	int pps_state;
 	int pps_latch_state;
 	int ref_enable;
+	int ptp_adjusted;
 	struct omap_dm_timer *odt;/* timer for 1PPS generator */
 	struct omap_dm_timer *odt2;/* timer for 1PPS latch */
 	u32 count_prev;
