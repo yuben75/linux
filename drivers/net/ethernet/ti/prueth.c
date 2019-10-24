@@ -19,6 +19,7 @@
 #include <linux/etherdevice.h>
 #include <linux/genalloc.h>
 #include <linux/if_vlan.h>
+#include <linux/if_bridge.h>
 #include <linux/hrtimer.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
@@ -217,6 +218,17 @@ void prueth_set_reg(struct prueth *prueth, enum prueth_mem region,
 	val &= ~mask;
 	val |= (set & mask);
 	prueth_write_reg(prueth, region, reg, val);
+}
+
+static inline
+void prueth_sw_port_set_stp_state(struct prueth *prueth,
+				  enum prueth_port port, u8 state)
+{
+	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
+	u32 offset = port - 1 ? ICSS_EMAC_FW_FDB_STP_P2_STP_STATE_OFFSET :
+				ICSS_EMAC_FW_FDB_STP_P1_STP_STATE_OFFSET;
+
+	writeb(state, sram + offset);
 }
 
 static inline bool pruptp_is_tx_enabled(struct prueth *prueth)
@@ -741,6 +753,28 @@ static const unsigned int emac_port_rx_priority_queue_ids[][2] = {
 	},
 };
 
+/* In current version of switch firmware, 4 host rx queues are shared
+ * between 2 physical ports. Also it raises the same interrupt
+ * regardless on which port a frame is received.
+ */
+static const unsigned int sw_emac_port_rx_priority_queue_ids[][4] = {
+	[PRUETH_PORT_HOST] = {
+		0, 0, 0, 0
+	},
+	[PRUETH_PORT_MII0] = {
+		PRUETH_QUEUE1,
+		PRUETH_QUEUE2,
+		PRUETH_QUEUE3,
+		PRUETH_QUEUE4
+	},
+	[PRUETH_PORT_MII1] = {
+		PRUETH_QUEUE1,
+		PRUETH_QUEUE2,
+		PRUETH_QUEUE3,
+		PRUETH_QUEUE4
+	},
+};
+
 #define PRUETH_ETH_TYPE_OFFSET           12
 #define PRUETH_ETH_TYPE_UPPER_SHIFT      8
 
@@ -761,7 +795,7 @@ static int prueth_ecap_initialization(struct prueth_emac *emac,
 	if (!new_timeout_val) {
 		/* disable pacing */
 		writeb_relaxed(val, sram + emac->rx_int_pacing_offset);
-		if (PRUETH_HAS_RED(prueth)) {
+		if (PRUETH_HAS_SWITCH(prueth)) {
 			prueth->emac[PRUETH_MAC0]->rx_pacing_timeout =
 				new_timeout_val;
 			prueth->emac[PRUETH_MAC1]->rx_pacing_timeout =
@@ -784,7 +818,7 @@ static int prueth_ecap_initialization(struct prueth_emac *emac,
 
 		writeb_relaxed(INTR_PAC_DIS_ADP_LGC_DIS,
 			       sram + emac->rx_int_pacing_offset);
-		if (PRUETH_HAS_RED(prueth) ||
+		if (PRUETH_HAS_SWITCH(prueth) ||
 		    (PRUETH_IS_EMAC(prueth) &&
 			 emac->port_id == PRUETH_PORT_MII0)) {
 			writel_relaxed(new_timeout_val *
@@ -793,7 +827,7 @@ static int prueth_ecap_initialization(struct prueth_emac *emac,
 			writel_relaxed(INTR_PAC_PREV_TS_RESET_VAL,
 				       sram + INTR_PAC_PREV_TS_OFFSET_PRU0);
 		}
-		if (PRUETH_HAS_RED(prueth) ||
+		if (PRUETH_HAS_SWITCH(prueth) ||
 		    (PRUETH_IS_EMAC(prueth) &&
 		     emac->port_id == PRUETH_PORT_MII1)) {
 			writel_relaxed(new_timeout_val *
@@ -803,14 +837,14 @@ static int prueth_ecap_initialization(struct prueth_emac *emac,
 				       sram + INTR_PAC_PREV_TS_OFFSET_PRU1);
 		}
 	} else {
-		if (PRUETH_HAS_RED(prueth) ||
+		if (PRUETH_HAS_SWITCH(prueth) ||
 		    (PRUETH_IS_EMAC(prueth) &&
 		     emac->port_id == PRUETH_PORT_MII0)) {
 			writel_relaxed(new_timeout_val *
 				       NSEC_PER_USEC / ECAP_TICK_NSEC,
 				       sram + INTR_PAC_TMR_EXP_OFFSET_PRU0);
 		}
-		if (PRUETH_HAS_RED(prueth) ||
+		if (PRUETH_HAS_SWITCH(prueth) ||
 		    (PRUETH_IS_EMAC(prueth) &&
 		     emac->port_id == PRUETH_PORT_MII1)) {
 			writel_relaxed(new_timeout_val *
@@ -821,7 +855,7 @@ static int prueth_ecap_initialization(struct prueth_emac *emac,
 
 	writeb_relaxed(val, sram + emac->rx_int_pacing_offset);
 
-	if (PRUETH_HAS_RED(prueth)) {
+	if (PRUETH_HAS_SWITCH(prueth)) {
 		prueth->emac[PRUETH_MAC0]->rx_pacing_timeout = new_timeout_val;
 		prueth->emac[PRUETH_MAC1]->rx_pacing_timeout = new_timeout_val;
 	} else {
@@ -1003,11 +1037,12 @@ static void prueth_mii_init(struct prueth *prueth)
 			    (EMAC_MIN_PKTLEN - 1) <<
 			    PRUSS_MII_RT_RX_FRMS_MIN_FRM_SHIFT);
 
-	/* For EMAC, set Max frame size to 1522 i.e size with VLAN and for
+	/* For non-RED, set Max frame size to 1522 i.e size with VLAN and for
 	 * HSR/PRP set it to 1528 i.e size with tag or rct. Actual size
 	 * written to register is size - 1 as per TRM. Since driver
 	 * support run time change of protocol, driver must overwrite
 	 * the values for EMAC case where the max size is 1522.
+	 * Non-RED implies EMAC or SWITCH.
 	 */
 	if (PRUETH_HAS_RED(prueth)) {
 		regmap_update_bits(prueth->mii_rt,
@@ -1090,6 +1125,12 @@ static int prueth_port_enable(struct prueth *prueth, enum prueth_port port,
 		writeb(0x1, port_ctrl);
 	else
 		writeb(0x0, port_ctrl);
+
+	if (PRUETH_IS_SWITCH(prueth)) {
+		prueth_sw_port_set_stp_state(prueth, port,
+					     enable ? BR_STATE_FORWARDING :
+					     BR_STATE_DISABLED);
+	}
 
 	return 0;
 }
@@ -2159,15 +2200,21 @@ static irqreturn_t emac_rx_thread(int irq, void *dev_id)
 	struct prueth_packet_info pkt_info;
 	struct net_device_stats *ndevstats = &emac->ndev->stats;
 	int i, j, ret;
-	struct prueth_emac *other_emac;
+	struct prueth_emac *other_emac = NULL;
 	const unsigned int *prio_q_ids;
 	unsigned int q_cnt;
 	unsigned int emac_max_pktlen = PRUETH_MAX_PKTLEN_EMAC;
 
 	prueth = emac->prueth;
 
-	prio_q_ids = emac_port_rx_priority_queue_ids[emac->port_id];
-	q_cnt = NUM_RX_QUEUES;
+	if (PRUETH_IS_SWITCH(prueth)) {
+		prio_q_ids = sw_emac_port_rx_priority_queue_ids[emac->port_id];
+		q_cnt = 4;
+		other_emac = prueth->emac[(emac->port_id ^ 0x3) - 1];
+	} else {
+		prio_q_ids = emac_port_rx_priority_queue_ids[emac->port_id];
+		q_cnt = NUM_RX_QUEUES;
+	}
 
 	if (PRUETH_HAS_RED(prueth))
 		emac_max_pktlen = PRUETH_MAX_PKTLEN_RED;
@@ -2226,6 +2273,14 @@ static irqreturn_t emac_rx_thread(int irq, void *dev_id)
 				ndevstats->rx_length_errors++;
 			} else {
 				update_rd_ptr = bd_rd_ptr;
+
+				if (PRUETH_IS_SWITCH(prueth)) {
+					if (pkt_info.port ==
+						other_emac->port_id) {
+						emac = other_emac;
+					}
+				}
+
 				ret = emac_rx_packet(emac, &update_rd_ptr,
 						     pkt_info, rxqueue);
 				if (ret)
@@ -2542,7 +2597,8 @@ static int sw_emac_set_boot_pru(struct prueth_emac *emac,
 	 *   Rx is done by local PRU
 	 *   Tx is done by the other PRU
 	 */
-	emac_lre_set_stats(emac, &prueth->lre_stats);
+	if (PRUETH_HAS_RED(prueth))
+		emac_lre_set_stats(emac, &prueth->lre_stats);
 
 	/* PRU0: set firmware and boot */
 	pru_firmwares = &prueth->fw_data->fw_pru[0];
@@ -3435,14 +3491,16 @@ static int emac_ndo_open(struct net_device *ndev)
 					   flags, lp_int_name, prueth->lp);
 	}
 
-	if (PRUETH_IS_EMAC(prueth) ||
+	if (PRUETH_IS_EMAC(prueth) || PRUETH_IS_SWITCH(prueth) ||
 	    (PRUETH_HAS_RED(prueth) && !prueth->priority_ts))
 		ret = request_threaded_irq(emac->rx_irq, NULL, emac_rx_thread,
 					   flags, ndev->name, ndev);
+
 	if (ret) {
 		netdev_err(ndev, "unable to request RX IRQ\n");
 		return ret;
 	}
+
 	/* Currently switch firmware doesn't implement tx irq. So make it
 	 * conditional to non switch case
 	 */
@@ -3530,6 +3588,12 @@ static int emac_ndo_open(struct net_device *ndev)
 				goto free_ptp_irq;
 		}
 
+		if (PRUETH_IS_SWITCH(prueth)) {
+			ret = prueth_sw_debugfs_init(prueth);
+			if (ret)
+				goto clean_debugfs_hsr_prp;
+		}
+
 		if (PRUETH_HAS_PTP(prueth)) {
 			if (iep_register(prueth->iep))
 				dev_err(&ndev->dev, "error registering iep\n");
@@ -3557,7 +3621,7 @@ static int emac_ndo_open(struct net_device *ndev)
 		}
 
 		/* Set VLAN filter table offsets */
-		if (PRUETH_IS_EMAC(prueth)) {
+		if (PRUETH_IS_EMAC(prueth) || PRUETH_IS_SWITCH(prueth)) {
 			prueth->fw_offsets->vlan_ctrl_byte  =
 				ICSS_EMAC_FW_VLAN_FILTER_CTRL_BITMAP_OFFSET;
 			prueth->fw_offsets->vlan_filter_tbl =
@@ -3588,7 +3652,7 @@ static int emac_ndo_open(struct net_device *ndev)
 	if (PRUETH_IS_EMAC(prueth)) {
 		ret = prueth_dualemac_debugfs_init(emac);
 		if (ret)
-			goto clean_debugfs_hsr_prp;
+			goto clean_debugfs_sw;
 	}
 
 	if (PRUETH_HAS_PTP(prueth)) {
@@ -3645,7 +3709,7 @@ static int emac_ndo_open(struct net_device *ndev)
 	prueth_start_timer(prueth);
 
 	/* initialize rx interrupt pacing control offsets */
-	if (PRUETH_HAS_RED(prueth)) {
+	if (PRUETH_HAS_SWITCH(prueth)) {
 		prueth->emac[PRUETH_MAC0]->rx_int_pacing_offset =
 			INTR_PAC_STATUS_OFFSET;
 		prueth->emac[PRUETH_MAC1]->rx_int_pacing_offset =
@@ -3682,6 +3746,9 @@ static int emac_ndo_open(struct net_device *ndev)
 
 clean_debugfs_emac:
 	prueth_debugfs_term(emac);
+clean_debugfs_sw:
+	if (PRUETH_IS_SWITCH(prueth))
+		prueth_sw_debugfs_term(prueth);
 clean_debugfs_hsr_prp:
 	if (PRUETH_HAS_RED(prueth))
 		prueth_hsr_prp_debugfs_term(prueth);
@@ -3739,10 +3806,16 @@ static int sw_emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 	if (prueth->emac_configured)
 		return 0;
 
-	prueth_hsr_prp_debugfs_term(prueth);
+	if (!PRUETH_IS_SWITCH(emac->prueth))
+		prueth_hsr_prp_debugfs_term(prueth);
+	else
+		prueth_sw_debugfs_term(prueth);
+
 	rproc_shutdown(prueth->pru0);
 	rproc_shutdown(prueth->pru1);
-	emac_lre_get_stats(emac, &emac->prueth->lre_stats);
+
+	if (!PRUETH_IS_SWITCH(emac->prueth))
+		emac_lre_get_stats(emac, &emac->prueth->lre_stats);
 
 	if (PRUETH_HAS_RED(emac->prueth)) {
 		hrtimer_cancel(&prueth->tbl_check_timer);
@@ -3962,11 +4035,16 @@ fail_tx:
 static netdev_features_t emac_ndo_fix_features(struct net_device *ndev,
 					       netdev_features_t features)
 {
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
+
 	/* Fix up for HSR since lower layer firmware can do cut through
 	 * switching and the same is to be disabled at the upper layer.
 	 * This is not applicable for PRP or EMAC.
 	 */
 	if (features & NETIF_F_HW_HSR_RX_OFFLOAD)
+		features |= NETIF_F_HW_L2FW_DOFFLOAD;
+	else if (PRUETH_IS_SWITCH(prueth))
 		features |= NETIF_F_HW_L2FW_DOFFLOAD;
 	else
 		features &= ~NETIF_F_HW_L2FW_DOFFLOAD;
@@ -4025,8 +4103,14 @@ static int emac_ndo_set_features(struct net_device *ndev,
 		ndev->features = ndev->features & ~NETIF_F_HW_HSR_RX_OFFLOAD;
 		ndev->features |= NETIF_F_HW_PRP_RX_OFFLOAD;
 		ndev->features &= ~NETIF_F_HW_L2FW_DOFFLOAD;
+	} else if (features & NETIF_F_HW_L2FW_DOFFLOAD) {
+		prueth->eth_type = PRUSS_ETHTYPE_SWITCH;
+		ndev->features &= ~(NETIF_F_HW_HSR_RX_OFFLOAD |
+				    NETIF_F_HW_PRP_RX_OFFLOAD);
+		ndev->features |= NETIF_F_HW_L2FW_DOFFLOAD;
 	} else {
 		prueth->eth_type = PRUSS_ETHTYPE_EMAC;
+
 		ndev->features =
 			(ndev->features & ~(NETIF_F_HW_HSR_RX_OFFLOAD |
 					NETIF_F_HW_PRP_RX_OFFLOAD |
@@ -5102,6 +5186,8 @@ static int prueth_netdev_init(struct prueth *prueth,
 	else if (PRUETH_HAS_PRP(prueth))
 		ndev->features |= NETIF_F_HW_PRP_RX_OFFLOAD |
 				  NETIF_F_HW_VLAN_CTAG_FILTER;
+	else if (PRUETH_IS_SWITCH(prueth))
+		ndev->features |= NETIF_F_HW_L2FW_DOFFLOAD;
 
 	ndev->features |= NETIF_F_HW_VLAN_CTAG_FILTER;
 
@@ -5668,6 +5754,8 @@ static struct prueth_private_data am57xx_prueth_pdata = {
 			"ti-pruss/am57xx-pru0-pruhsr-fw.elf",
 		.fw_name[PRUSS_ETHTYPE_PRP] =
 			"ti-pruss/am57xx-pru0-pruprp-fw.elf",
+		.fw_name[PRUSS_ETHTYPE_SWITCH] =
+			"ti-pruss/am57xx-pru0-prusw-fw.elf",
 	},
 	.fw_pru[PRUSS_PRU1] = {
 		.fw_name[PRUSS_ETHTYPE_EMAC] =
@@ -5676,6 +5764,8 @@ static struct prueth_private_data am57xx_prueth_pdata = {
 			"ti-pruss/am57xx-pru1-pruhsr-fw.elf",
 		.fw_name[PRUSS_ETHTYPE_PRP] =
 			"ti-pruss/am57xx-pru1-pruprp-fw.elf",
+		.fw_name[PRUSS_ETHTYPE_SWITCH] =
+			"ti-pruss/am57xx-pru1-prusw-fw.elf",
 	},
 	.fw_rev = FW_REV_V2_1
 };

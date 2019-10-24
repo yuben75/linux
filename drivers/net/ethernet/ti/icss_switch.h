@@ -349,4 +349,7 @@
 /* 1 byte | 0 : Interrupt Pacing disabled | 1 : Interrupt Pacing enabled */
 #define INTR_PAC_STATUS_OFFSET_PRU0             0x1FAF
 
+#define ICSS_EMAC_FW_FDB_STP_P1_STP_STATE_OFFSET 0x2e00
+#define ICSS_EMAC_FW_FDB_STP_P2_STP_STATE_OFFSET 0x2e01
+
 #endif /* __ICSS_SWITCH_H */
