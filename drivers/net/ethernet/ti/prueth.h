@@ -235,7 +235,9 @@ struct port_statistics {
 	u32 excess_coll;
 
 	u32 rx_misalignment_frames;
-	u32 stormprev_counter;
+	u32 stormprev_counter_bc;
+	u32 stormprev_counter_mc;
+	u32 stormprev_counter_uc;
 	u32 mac_rxerror;
 	u32 sfd_error;
 	u32 def_tx;
@@ -579,7 +581,9 @@ struct prueth_emac {
 	spinlock_t lock;	/* serialize access */
 	spinlock_t addr_lock;
 	unsigned int nsp_timer_count;
-	unsigned int nsp_credit;
+	unsigned int nsp_credit_bc;
+	unsigned int nsp_credit_mc;
+	unsigned int nsp_credit_uc;
 	unsigned char mc_mac_mask[ETH_ALEN];
 	struct kobject kobj;
 #ifdef	CONFIG_DEBUG_FS
@@ -589,7 +593,9 @@ struct prueth_emac {
 	struct dentry *mc_filter_file;
 #endif
 #ifdef CONFIG_SYSFS
-	struct device_attribute nsp_credit_attr;
+	struct device_attribute nsp_credit_bc_attr;
+	struct device_attribute nsp_credit_mc_attr;
+	struct device_attribute nsp_credit_uc_attr;
 	struct device_attribute prp_emac_mode_attr;
 #endif
 	int ptp_tx_enable;

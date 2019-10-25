@@ -97,7 +97,7 @@
  */
 /* base statistics offset */
 #define STATISTICS_OFFSET	0x1f00
-#define STAT_SIZE		0x90
+#define STAT_SIZE		0x98
 
 /* The following offsets indicate which sections of the memory are used
  * for switch internal tasks
@@ -115,7 +115,7 @@
  * These are present on both PRU0 and PRU1
  */
 /* 4 bytes */
-#define STORM_PREVENTION_OFFSET		(STATISTICS_OFFSET + STAT_SIZE)
+#define STORM_PREVENTION_OFFSET_BC	(STATISTICS_OFFSET + STAT_SIZE)
 /* 4 bytes */
 #define PHY_SPEED_OFFSET		(STATISTICS_OFFSET + STAT_SIZE + 4)
 /* 1 byte */
@@ -130,8 +130,12 @@
 #define PORT_MAC_ADDR			(STATISTICS_OFFSET + STAT_SIZE + 18)
 /* 1 byte */
 #define RX_INT_STATUS_OFFSET		(STATISTICS_OFFSET + STAT_SIZE + 24)
+/* 4 bytes */
+#define STORM_PREVENTION_OFFSET_MC	(STATISTICS_OFFSET + STAT_SIZE + 25)
+/* 4 bytes */
+#define STORM_PREVENTION_OFFSET_UC	(STATISTICS_OFFSET + STAT_SIZE + 29)
 /* 4 bytes ? */
-#define STP_INVALID_STATE_OFFSET        (STATISTICS_OFFSET + STAT_SIZE + 28)
+#define STP_INVALID_STATE_OFFSET        (STATISTICS_OFFSET + STAT_SIZE + 33)
 
 /* DRAM1 Offsets for Switch */
 /* 4 queue descriptors for port 0 (host receive) */
