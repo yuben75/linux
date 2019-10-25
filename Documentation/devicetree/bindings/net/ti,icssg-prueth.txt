@@ -3,8 +3,6 @@ Texas Instruments ICSSG PRUSS Ethernet
 
 Required properties:
 - compatible       : Should be "ti,am654-icssg-prueth" for AM65x Family SoCs
-		     Should be "ti,am654-dualicssg-prueth" for AM65x Family
-		     SoCs when ICSSG0 and ICSSG1 are paired.
 - prus             : list of pHandles to the PRU and RTU nodes
 - firmware-name    : should contain the name of the firmware image
 			file located in the firmware search path
@@ -16,11 +14,7 @@ Required properties:
 			    "tx1-0", "tx1-1", "tx1-2", "tx1-3",
 			    "rx0", "rx1", "rxmgm0", "rxmgm1"
 - mii-g-rt	   : phandle to MII_G_RT module's syscon regmap.
-- mii-g-rt-paired  : phandle to paired ICSSG's MII_G_RT module's syscon
-		     regmap.
 - mii-rt	   : phandle to MII_RT module's syscon regmap.
-- mii-rt-paired	   : phandle to paired ICSSG's MII_RT module's syscon
-		     regmap.
 
 Must contain children, one for each of the MAC ports.
 Children must be named ethernet-mii0 and ethernet-mii1.
