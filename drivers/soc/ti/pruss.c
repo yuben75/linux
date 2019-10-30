@@ -400,7 +400,8 @@ static int pruss_probe(struct platform_device *pdev)
 	if (!pruss->cfg_base)
 		return -ENOMEM;
 
-	if (!of_device_is_compatible(pdev->dev.of_node, "ti,am654-icssg"))
+	if (!of_device_is_compatible(pdev->dev.of_node, "ti,am654-icssg") &&
+	    !of_device_is_compatible(pdev->dev.of_node, "ti,j721e-icssg"))
 		goto skip_mux;
 
 	ret = pruss_clk_mux_setup(pruss, pruss->core_clk_mux, "coreclk_mux",
@@ -584,6 +585,7 @@ static const struct of_device_id pruss_of_match[] = {
 	{ .compatible = "ti,am5728-pruss", .data = &am57xx_match_data, },
 	{ .compatible = "ti,k2g-pruss", .data = &k2g_match_data, },
 	{ .compatible = "ti,am654-icssg", .data = NULL, },
+	{ .compatible = "ti,j721e-icssg", .data = NULL, },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, pruss_of_match);
