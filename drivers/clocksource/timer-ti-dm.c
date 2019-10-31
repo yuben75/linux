@@ -215,7 +215,7 @@ static int omap_dm_timer_is_enabled(struct omap_dm_timer *timer)
 		return 0;
 }
 
-static void omap_dm_timer_enable(struct omap_dm_timer *timer)
+void omap_dm_timer_enable(struct omap_dm_timer *timer)
 {
 	int c;
 
