@@ -18,7 +18,6 @@ dtb-$(CONFIG_ARCH_K3_AM6_SOC) += k3-am654-base-board.dtb \
 	k3-am654-evm-csi2-ov490.dtbo \
 	k3-am654-evm-csi2-ov5640.dtbo \
 	k3-am654-idk.dtbo \
-	k3-am654-idk-interposer.dtbo \
 	k3-am654-base-board-jailhouse.dtbo \
 	k3-am654-evm-prupwm.dtbo
 
