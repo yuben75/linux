@@ -933,6 +933,16 @@ static void prueth_emac_stop(struct prueth_emac *emac)
 	rproc_shutdown(prueth->pru[slice]);
 }
 
+static void emac_set_default_mii_config(struct prueth_emac *emac)
+{
+	struct prueth *prueth = emac->prueth;
+	int slice = prueth_emac_slice(emac);
+
+	icssg_update_rgmii_cfg(prueth->miig_rt, SPEED_10,
+			       false, slice);
+	icssg_update_mii_rt_cfg(prueth->mii_rt, SPEED_10, slice);
+}
+
 /* called back by PHY layer if there is change in link state of hw port*/
 static void emac_adjust_link(struct net_device *ndev)
 {
@@ -964,8 +974,8 @@ static void emac_adjust_link(struct net_device *ndev)
 		new_state = true;
 		emac->link = 0;
 		/* defaults for no link */
-		emac->speed = SPEED_1000;
-		emac->duplex = DUPLEX_FULL;
+		emac->speed = SPEED_10;
+		emac->duplex = DUPLEX_HALF;
 	}
 
 	if (new_state) {
@@ -996,10 +1006,7 @@ static void emac_adjust_link(struct net_device *ndev)
 			icssg_update_mii_rt_cfg(prueth->mii_rt, emac->speed,
 						slice);
 		} else {
-			icssg_update_rgmii_cfg(prueth->miig_rt, emac->speed,
-					       true, slice);
-			icssg_update_mii_rt_cfg(prueth->mii_rt, emac->speed,
-						slice);
+			emac_set_default_mii_config(emac);
 		}
 	}
 
@@ -1137,6 +1144,8 @@ static int emac_ndo_open(struct net_device *ndev)
 	ret = prueth_emac_start(prueth, emac);
 	if (ret)
 		goto free_rx_mgm_irq;
+
+	emac_set_default_mii_config(emac);
 
 	/* start PHY */
 	phy_start(emac->phydev);
