@@ -883,6 +883,7 @@ static int prueth_emac_start(struct prueth *prueth, struct prueth_emac *emac)
 	config->num_tx_threads = 0;
 	config->rx_flow_id = emac->rx_flow_id_base; /* flow id for host port */
 	config->rx_mgr_flow_id = emac->rx_mgm_flow_id_base; /* for mgm ch */
+	config->rand_seed = get_random_int();
 
 	/* set buffer sizes for the pools. 0-7 are not used for dual-emac */
 	for (i = PRUETH_EMAC_BUF_POOL_START;
@@ -932,14 +933,24 @@ static void prueth_emac_stop(struct prueth_emac *emac)
 	rproc_shutdown(prueth->pru[slice]);
 }
 
+static void emac_set_default_mii_config(struct prueth_emac *emac)
+{
+	struct prueth *prueth = emac->prueth;
+	int slice = prueth_emac_slice(emac);
+
+	icssg_update_rgmii_cfg(prueth->miig_rt, SPEED_10,
+			       false, slice);
+	icssg_update_mii_rt_cfg(prueth->mii_rt, SPEED_10, slice);
+}
+
 /* called back by PHY layer if there is change in link state of hw port*/
 static void emac_adjust_link(struct net_device *ndev)
 {
 	struct prueth_emac *emac = netdev_priv(ndev);
 	struct phy_device *phydev = emac->phydev;
-	bool gig_en = false, full_duplex = false;
 	struct prueth *prueth = emac->prueth;
 	int slice = prueth_emac_slice(emac);
+	bool full_duplex = false;
 	bool new_state = false;
 	unsigned long flags;
 
@@ -963,12 +974,8 @@ static void emac_adjust_link(struct net_device *ndev)
 		new_state = true;
 		emac->link = 0;
 		/* defaults for no link */
-
-		/* f/w should support 100 & 1000 */
-		emac->speed = SPEED_1000;
-
-		/* half duplex may not be supported by f/w */
-		emac->duplex = DUPLEX_FULL;
+		emac->speed = SPEED_10;
+		emac->duplex = DUPLEX_HALF;
 	}
 
 	if (new_state) {
@@ -978,23 +985,28 @@ static void emac_adjust_link(struct net_device *ndev)
 		 * values
 		 */
 		if (emac->link) {
-			if (phydev->speed == SPEED_1000)
-				gig_en = true;
-
 			if (phydev->duplex == DUPLEX_FULL)
 				full_duplex = true;
 
+			if (!full_duplex) {
+				void __iomem *va = prueth->shram.va +
+					slice * ICSSG_CONFIG_OFFSET_SLICE1;
+				struct icssg_config *config =
+					(struct icssg_config *)va;
+				u32 val = get_random_int();
+
+				writel(val, &config->rand_seed);
+			}
+
 			/* Set the RGMII cfg for gig en and full duplex */
-			icssg_update_rgmii_cfg(prueth->miig_rt, gig_en,
+			icssg_update_rgmii_cfg(prueth->miig_rt, emac->speed,
 					       full_duplex, slice);
+
 			/* update the Tx IPG based on 100M/1G speed */
 			icssg_update_mii_rt_cfg(prueth->mii_rt, emac->speed,
 						slice);
 		} else {
-			icssg_update_rgmii_cfg(prueth->miig_rt, true, true,
-					       emac->port_id);
-			icssg_update_mii_rt_cfg(prueth->mii_rt, emac->speed,
-						slice);
+			emac_set_default_mii_config(emac);
 		}
 	}
 
@@ -1132,6 +1144,8 @@ static int emac_ndo_open(struct net_device *ndev)
 	ret = prueth_emac_start(prueth, emac);
 	if (ret)
 		goto free_rx_mgm_irq;
+
+	emac_set_default_mii_config(emac);
 
 	/* start PHY */
 	phy_start(emac->phydev);
