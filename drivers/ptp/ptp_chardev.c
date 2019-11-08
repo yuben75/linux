@@ -162,6 +162,15 @@ long ptp_ioctl(struct posix_clock *pc, unsigned int cmd, unsigned long arg)
 		req.type = PTP_CLK_REQ_EXTTS;
 		enable = req.extts.flags & PTP_ENABLE_FEATURE ? 1 : 0;
 		err = ops->enable(ops, &req, enable);
+		if (!enable && !err && queue_cnt(&ptp->tsevq)) {
+			struct timestamp_event_queue *queue = &ptp->tsevq;
+			unsigned long flags;
+
+			spin_lock_irqsave(&queue->lock, flags);
+			queue->head = 0;
+			queue->tail = 0;
+			spin_unlock_irqrestore(&queue->lock, flags);
+		}
 		break;
 
 	case PTP_PEROUT_REQUEST:
