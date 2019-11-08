@@ -738,7 +738,8 @@ static int fill_frame_info(struct hsr_prp_frame_info *frame,
 		struct prp_rct *rct = skb_get_PRP_rct(skb);
 
 		if (rct &&
-		    prp_check_lsdu_size(skb, rct, frame->is_supervision)) {
+		    prp_check_lsdu_size(skb, rct, frame->is_supervision) &&
+					port->priv->prot_version == PRP_V1) {
 			frame->skb_hsr = NULL;
 			frame->skb_std = NULL;
 			frame->skb_prp = skb;
