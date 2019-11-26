@@ -436,6 +436,7 @@ static int iep_pps_enable(struct iep *iep, unsigned int pps, int on)
 	struct timespec64 ts;
 	u64 cyc_to_sec_bd, ns_to_sec_bd, cyc_per_sec, cyc_last2, cmp_val, rem;
 	int *pps_en;
+	bool done = true;
 
 	if (pps >= MAX_PPS)
 		return -EINVAL;
@@ -444,33 +445,36 @@ static int iep_pps_enable(struct iep *iep, unsigned int pps, int on)
 
 	on = (on ? 1 : 0);
 
+	spin_lock_irqsave(&iep->ptp_lock, flags);
+
 	if (on && *pps_en == 1) {
 		/* enable: pps is already on */
-		return 0;
 	} else if (on && *pps_en == 0) {
 		/* enable: pps is stopping but not yet stopped,
 		 * so just turn it back on and return
 		 */
 		*pps_en = on;
-		return 0;
 	} else if (on && *pps_en == -1) {
 		/* enable: pps is currently off
 		 * turn it on and enable cmp etc.
 		 */
 		*pps_en = on;
+		done = false;
 	} else if (!on && *pps_en == 1) {
 		/* disable: pps is currently on
 		 * just set stop and return
 		 * pps will stop in next pps report check
 		 */
 		*pps_en = on;
-		return 0;
 	} else if (!on && *pps_en != 1) {
 		/* disable: pps is already stoppig or stopped
 		 * no change, just return
 		 */
-		return 0;
 	}
+	spin_unlock_irqrestore(&iep->ptp_lock, flags);
+
+	if (done)
+		return 0;
 
 	/* Start the requested pps */
 	/* get current time and counter value */
