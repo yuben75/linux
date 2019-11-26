@@ -102,6 +102,8 @@ struct cpts_skb_cb_data {
 
 #define CPTS_TMR_LATCH_DELAY		40
 
+#define CPTS_LATCH_INIT_THRESH          2
+
 static u32 tmr_reload_cnt = CPTS_TMR_RELOAD_CNT;
 static u32 tmr_reload_cnt_prev = CPTS_TMR_RELOAD_CNT;
 static int ts_correct;
@@ -653,9 +655,11 @@ static int cpts_extts_enable(struct cpts *cpts, u32 index, int on)
 		v &= ~BIT(8 + index);
 		cpts->hw_ts_enable &= ~BIT(index);
 #ifdef CONFIG_TI_1PPS_DM_TIMER
-		if (cpts->use_1pps_latch)
+		if (cpts->use_1pps_latch) {
 			pinctrl_select_state(cpts->pins,
 					     cpts->pin_state_latch_off);
+			cpts_latch_pps_stop(cpts);
+		}
 #endif
 	}
 	cpts_write32(cpts, v, control);
@@ -1430,7 +1434,11 @@ enum cpts_1pps_state {
 	/* Wait state: PTP timestamp has been verified,
 	 * wait for next check period
 	 */
-	WAIT = 3
+	WAIT = 3,
+	/* NonAdjust state: There is too much frequency difference,
+	 * No more timing adjustment to get into the latch window
+	 */
+	NONADJUST = 4,
 };
 
 static void cpts_tmr_reinit(struct cpts *cpts)
@@ -1831,6 +1839,7 @@ static void cpts_latch_proc(struct cpts *cpts, u32 latch_cnt)
 	u32 offset = 0xFFFFFFFFUL - latch_cnt + 1;
 	u32 reload_cnt = CPTS_LATCH_TMR_RELOAD_CNT;
 	static bool skip;
+	static int init_cnt;
 
 	if (!cpts)
 		return;
@@ -1855,11 +1864,12 @@ static void cpts_latch_proc(struct cpts *cpts, u32 latch_cnt)
 				 */
 				cpts_latch_pps_start(cpts);
 				cpts->pps_latch_state = SYNC;
+				init_cnt = 0;
 				pr_info("%s: enter SYNC state\n"
 					, __func__);
 				break;
 			}
-
+			init_cnt++;
 			skip = true;
 		} else {
 			skip = false;
@@ -1874,12 +1884,29 @@ static void cpts_latch_proc(struct cpts *cpts, u32 latch_cnt)
 				 */
 				cpts_latch_pps_start(cpts);
 				cpts->pps_latch_state = SYNC;
+				init_cnt = 0;
 			}
 		}
 
 		WRITE_TLDR(cpts->odt2, reload_cnt);
+
+		if (!skip && init_cnt >= CPTS_LATCH_INIT_THRESH) {
+			/* Multiple timing adjustment failures indicate that
+			 * the frequency difference is larger than 25PPM,
+			 * (out of scope) enter NONADJUST state where PPS event
+			 * is relayed without timing window adjustment.
+			 */
+			cpts->pps_latch_state = NONADJUST;
+			cpts_latch_pps_start(cpts);
+			init_cnt = 0;
+			pr_info("%s: enter NONADJUST state\n", __func__);
+		}
+
 		if (cpts->pps_latch_state == SYNC)
 			pr_info("%s: enter SYNC state\n", __func__);
+		else
+			pr_debug("%s: offset = %u, latch_cnt = %u, reload_cnt =%u\n",
+				 __func__, offset * 10, latch_cnt, reload_cnt);
 		break;
 
 	case ADJUST:
@@ -1917,6 +1944,9 @@ static void cpts_latch_proc(struct cpts *cpts, u32 latch_cnt)
 			WRITE_TLDR(cpts->odt2, reload_cnt);
 			break;
 		}
+
+	case NONADJUST:
+		break;
 
 	default:
 		/* Error handling */
