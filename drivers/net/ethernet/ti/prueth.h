@@ -143,6 +143,7 @@ struct prueth_packet_info {
 	bool error;
 	bool sv_frame;
 	bool lookup_success;
+	bool flood;
 	u32 bd; /* +++WMK: dbg only: original bd */
 };
 
@@ -495,6 +496,12 @@ struct prueth_fw_offsets {
 	u32 index_array_max_entries;
 	u32 bin_array_max_entries;
 	u32 nt_array_max_entries;
+
+	u32 fdb_tbl_loc;
+	u32 fdb_tbl_offset;
+	u32 fdb_index_array_max_entries;
+	u32 fdb_mac_tbl_array_max_entries;
+
 	u32 vlan_ctrl_byte;
 	u32 vlan_filter_tbl;
 	u32 mc_ctrl_byte;
@@ -597,6 +604,8 @@ struct prueth_emac {
 
 	u32 rx_int_pacing_offset;
 	unsigned int rx_pacing_timeout;
+
+	int offload_fwd_mark;
 };
 
 struct prueth_mmap_port_cfg_basis {
@@ -725,6 +734,11 @@ struct prueth {
 	struct kthread_work    nt_work;
 	u32		rem_cnt;
 	spinlock_t	nt_lock;
+
+	u32                br_members;
+	struct net_device *hw_bridge_dev;
+	struct fdb_tbl    *fdb_tbl;
+	spinlock_t         fdb_tbl_lock; /* serialize accesses to fdb table */
 };
 
 #ifdef CONFIG_SYSFS

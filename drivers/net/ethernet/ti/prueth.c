@@ -41,6 +41,7 @@
 #include <linux/net_tstamp.h>
 #include <linux/ptp_classify.h>
 #include <net/lredev.h>
+#include <net/switchdev.h>
 
 #include "icss_time_sync.h"
 #include "prueth.h"
@@ -50,6 +51,7 @@
 #include "iep.h"
 #include "prueth_dbgfs.h"
 #include "prueth_node_tbl.h"
+#include "prueth_fdb_tbl.h"
 
 #define PRUETH_MODULE_VERSION "0.2"
 #define PRUETH_MODULE_DESCRIPTION "PRUSS Ethernet driver"
@@ -142,6 +144,12 @@ struct prueth_fw_offsets fw_offsets_v2_1 = {
 	.index_array_max_entries = V2_1_INDEX_TBL_MAX_ENTRIES,
 	.bin_array_max_entries = V2_1_BIN_TBL_MAX_ENTRIES,
 	.nt_array_max_entries = V2_1_NODE_TBL_MAX_ENTRIES,
+
+	.fdb_tbl_loc = V2_1_FDB_TBL_LOC,
+	.fdb_tbl_offset = V2_1_FDB_TBL_OFFSET,
+	.fdb_index_array_max_entries = FDB_INDEX_TBL_MAX_ENTRIES,
+	.fdb_mac_tbl_array_max_entries = FDB_MAC_TBL_MAX_ENTRIES,
+
 	/* Set on emac_ndo_open depending on eth_type */
 	.vlan_ctrl_byte = 0,
 	.vlan_filter_tbl = 0,
@@ -153,6 +161,8 @@ struct prueth_fw_offsets fw_offsets_v2_1 = {
 #define IEP_GLOBAL_CFG_REG_MASK      0xfffff
 #define IEP_GLOBAL_CFG_REG_PTP_VAL      0x111
 #define IEP_GLOBAL_CFG_REG_DEF_VAL      0x551
+
+static int sw_notifiers_registered;
 
 static inline enum prueth_port other_port_id(enum prueth_port port_id)
 {
@@ -224,11 +234,10 @@ static inline
 void prueth_sw_port_set_stp_state(struct prueth *prueth,
 				  enum prueth_port port, u8 state)
 {
-	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
-	u32 offset = port - 1 ? ICSS_EMAC_FW_FDB_STP_P2_STP_STATE_OFFSET :
-				ICSS_EMAC_FW_FDB_STP_P1_STP_STATE_OFFSET;
+	struct fdb_tbl *t = prueth->fdb_tbl;
 
-	writeb(state, sram + offset);
+	writeb(state, port - 1 ?
+		&t->port2_stp_cfg->state : &t->port1_stp_cfg->state);
 }
 
 static inline bool pruptp_is_tx_enabled(struct prueth *prueth)
@@ -1989,8 +1998,485 @@ static void parse_packet_info(struct prueth *prueth, u32 buffer_descriptor,
 				PRUETH_BD_SUP_HSR_FRAME_MASK);
 	pkt_info->lookup_success = !!(buffer_descriptor &
 				      PRUETH_BD_LOOKUP_SUCCESS_MASK);
+	pkt_info->flood = !!(buffer_descriptor & PRUETH_BD_SW_FLOOD_MASK);
 }
 
+static void prueth_sw_fdb_tbl_init(struct prueth *prueth)
+{
+	const struct prueth_fw_offsets *fw_ofs = prueth->fw_offsets;
+	struct fdb_tbl *t = prueth->fdb_tbl;
+
+	t->index_a = prueth->mem[fw_ofs->fdb_tbl_loc].va +
+			fw_ofs->fdb_tbl_offset;
+
+	t->mac_tbl_a          = (void __iomem *)t->index_a +
+				fw_ofs->fdb_index_array_max_entries *
+				sizeof(struct fdb_index_tbl_entry_t);
+
+	t->port1_stp_cfg      = (void __iomem *)t->mac_tbl_a +
+				fw_ofs->fdb_mac_tbl_array_max_entries *
+				sizeof(struct fdb_mac_tbl_entry_t);
+
+	t->port2_stp_cfg      = (void __iomem *)t->port1_stp_cfg +
+				sizeof(struct fdb_stp_config);
+
+	t->flood_enable_flags = (void __iomem *)t->port2_stp_cfg +
+				sizeof(struct fdb_stp_config);
+
+	t->locks              = (void __iomem *)t->flood_enable_flags +
+				sizeof(struct fdb_flood_config);
+
+	t->flood_enable_flags->host_flood_enable  = 1;
+	t->flood_enable_flags->port1_flood_enable = 1;
+	t->flood_enable_flags->port2_flood_enable = 1;
+	t->locks->host_lock                       = 0;
+	t->total_entries                          = 0;
+
+	spin_lock_init(&prueth->fdb_tbl_lock);
+}
+
+#define FDB_IDX_TBL() \
+	(&prueth->fdb_tbl->index_a->index_tbl_entry[0])
+
+#define FDB_IDX_TBL_ENTRY(n) \
+	(&prueth->fdb_tbl->index_a->index_tbl_entry[n])
+
+#define FDB_MAC_TBL() \
+	(&prueth->fdb_tbl->mac_tbl_a->mac_tbl_entry[0])
+
+#define FDB_MAC_TBL_ENTRY(n) \
+	(&prueth->fdb_tbl->mac_tbl_a->mac_tbl_entry[n])
+
+#define FDB_LEARN  1
+#define FDB_DELETE 2
+#define FDB_PURGE  3
+
+struct prueth_sw_fdb_work {
+	struct work_struct work;
+	struct prueth_emac *emac;
+	u8 addr[ETH_ALEN];
+	int event;
+};
+
+static void mac_copy(u8 *dst, const u8 *src)
+{
+	u8 i;
+
+	for (i = 0; i < 6; i++) {
+		*(dst) = *(src);
+		dst++;
+		src++;
+	}
+}
+
+/* -1  mac_a <  mac_b
+ *  0  mac_a == mac_b
+ *  1  mac_a >  mac_b
+ */
+static s8 mac_cmp(const u8 *mac_a, const u8 *mac_b)
+{
+	s8  ret = 0, i;
+
+	for (i = 0; i < 6; i++) {
+		if (mac_a[i] == mac_b[i])
+			continue;
+
+		ret = mac_a[i] < mac_b[i] ? -1 : 1;
+		break;
+	}
+
+	return ret;
+}
+
+static inline u8 prueth_sw_fdb_hash(const u8 *mac)
+{
+	return mac[0] ^ mac[1] ^ mac[2] ^ mac[3] ^ mac[4] ^ mac[5];
+}
+
+static s16
+prueth_sw_fdb_search(struct fdb_mac_tbl_array_t *mac_tbl,
+		     struct fdb_index_tbl_entry_t *bucket_info,
+		     const u8 *mac)
+{
+	int i;
+	u8 mac_tbl_idx = bucket_info->bucket_idx;
+
+	for (i = 0; i < bucket_info->bucket_entries; i++, mac_tbl_idx++) {
+		if (!mac_cmp(mac, mac_tbl->mac_tbl_entry[mac_tbl_idx].mac))
+			return mac_tbl_idx;
+	}
+
+	return -ENODATA;
+}
+
+static u16 prueth_sw_fdb_find_open_slot(struct fdb_tbl *fdb_tbl)
+{
+	u16 i;
+
+	for (i = 0; i < FDB_MAC_TBL_MAX_ENTRIES; i++) {
+		if (!fdb_tbl->mac_tbl_a->mac_tbl_entry[i].active)
+			break;
+	}
+
+	return i;
+}
+
+static s16
+prueth_sw_fdb_find_bucket_insert_point(struct fdb_mac_tbl_array_t *mac_tbl,
+				       struct fdb_index_tbl_entry_t *bkt_info,
+				       const u8 *mac)
+{
+	int i;
+	u8 mac_tbl_idx;
+	s8 cmp;
+
+	mac_tbl_idx = bkt_info->bucket_idx;
+
+	for (i = 0; i < bkt_info->bucket_entries; i++, mac_tbl_idx++) {
+		cmp = mac_cmp(mac, mac_tbl->mac_tbl_entry[mac_tbl_idx].mac);
+		if (cmp < 0) {
+			return mac_tbl_idx;
+		} else if (cmp == 0) {
+			/* touch the fdb */
+			mac_tbl->mac_tbl_entry[mac_tbl_idx].age = 0;
+			return -1;
+		}
+	}
+
+	return mac_tbl_idx;
+}
+
+static void prueth_sw_fdb_spin_lock(struct fdb_tbl *fdb_tbl)
+{
+	/* Take the host lock */
+	writeb(1, &fdb_tbl->locks->host_lock);
+
+	/* Wait for the PRUs to release their locks */
+	while (readb(&fdb_tbl->locks->pru_locks))
+		;
+}
+
+static inline void prueth_sw_fdb_spin_unlock(struct fdb_tbl *fdb_tbl)
+{
+	writeb(0, &fdb_tbl->locks->host_lock);
+}
+
+static s16
+prueth_sw_fdb_check_empty_slot_left(struct fdb_mac_tbl_array_t *mac_tbl,
+				    u8 mac_tbl_idx)
+{
+	s16 i;
+
+	for (i = mac_tbl_idx - 1; i > -1; i--) {
+		if (!mac_tbl->mac_tbl_entry[i].active)
+			break;
+	}
+
+	return i;
+}
+
+static s16
+prueth_sw_fdb_check_empty_slot_right(struct fdb_mac_tbl_array_t *mac_tbl,
+				     u8 mac_tbl_idx)
+{
+	s16 i;
+
+	for (i = mac_tbl_idx; i < FDB_MAC_TBL_MAX_ENTRIES; i++) {
+		if (!mac_tbl->mac_tbl_entry[i].active)
+			return i;
+	}
+
+	return -1;
+}
+
+static void prueth_sw_fdb_move_range_left(struct prueth *prueth,
+					  u16 left, u16 right)
+{
+	u16 i;
+	u8 *src, *dst;
+	u32 sz = 0;
+
+	for (i = left; i < right; i++) {
+		dst = (u8 *)FDB_MAC_TBL_ENTRY(i);
+		src = (u8 *)FDB_MAC_TBL_ENTRY(i + 1);
+		sz = sizeof(struct fdb_mac_tbl_entry_t);
+		memcpy_toio(dst, src, sz);
+	}
+}
+
+static void prueth_sw_fdb_move_range_right(struct prueth *prueth,
+					   u16 left, u16 right)
+{
+	u16 i;
+	u8 *src, *dst;
+	u32 sz = 0;
+
+	for (i = right; i > left; i--) {
+		dst = (u8 *)FDB_MAC_TBL_ENTRY(i);
+		src = (u8 *)FDB_MAC_TBL_ENTRY(i - 1);
+		sz = sizeof(struct fdb_mac_tbl_entry_t);
+		memcpy_toio(dst, src, sz);
+	}
+}
+
+static void prueth_sw_fdb_update_index_tbl(struct prueth *prueth,
+					   u16 left, u16 right)
+{
+	u16 i;
+	u8 hash, hash_prev;
+
+	/* To ensure we don't improperly update the
+	 * bucket index, initialize with an invalid
+	 * hash in case we are in leftmost slot
+	 */
+	hash_prev = 0xff;
+
+	if (left > 0) {
+		hash_prev = prueth_sw_fdb_hash(
+				FDB_MAC_TBL_ENTRY(left - 1)->mac);
+	}
+
+	/* For each moved element, update the bucket index */
+	for (i = left; i <= right; i++) {
+		hash = prueth_sw_fdb_hash(FDB_MAC_TBL_ENTRY(i)->mac);
+
+		/* Only need to update buckets once */
+		if (hash != hash_prev)
+			FDB_IDX_TBL_ENTRY(hash)->bucket_idx = i;
+
+		hash_prev = hash;
+	}
+}
+
+static struct fdb_mac_tbl_entry_t *
+prueth_sw_get_empty_mac_tbl_entry(struct prueth *prueth,
+				  struct fdb_index_tbl_entry_t *bucket_info,
+				  u8 suggested_mac_tbl_idx,
+				  bool *update_indexes)
+{
+	struct fdb_tbl *fdb = prueth->fdb_tbl;
+	struct fdb_mac_tbl_array_t *mt = fdb->mac_tbl_a;
+	s16 empty_slot_idx = 0, left = 0, right = 0;
+	u8 mti = suggested_mac_tbl_idx;
+
+	if (!FDB_MAC_TBL_ENTRY(mti)->active) {
+		/* Claim the entry */
+		FDB_MAC_TBL_ENTRY(mti)->active = 1;
+
+		return FDB_MAC_TBL_ENTRY(mti);
+	}
+
+	if (fdb->total_entries == FDB_MAC_TBL_MAX_ENTRIES)
+		return NULL;
+
+	empty_slot_idx = prueth_sw_fdb_check_empty_slot_left(mt, mti);
+	if (empty_slot_idx == -1) {
+		/* Nothing available on the left. But table isn't full
+		 * so there must be space to the right,
+		 */
+		empty_slot_idx = prueth_sw_fdb_check_empty_slot_right(mt, mti);
+
+		/* Shift right */
+		left = mti;
+		right = empty_slot_idx;
+		prueth_sw_fdb_move_range_right(prueth, left, right);
+
+		/* Claim the entry */
+		FDB_MAC_TBL_ENTRY(mti)->active = 1;
+
+		/* There is a chance we moved something in a
+		 * different bucket, update index table
+		 */
+		prueth_sw_fdb_update_index_tbl(prueth, left, right);
+
+		return FDB_MAC_TBL_ENTRY(mti);
+	}
+
+	if (empty_slot_idx == mti - 1) {
+		/* There is space immediately left of the open slot,
+		 * which means the inserted MAC address.
+		 * Must be the lowest-valued MAC address in bucket.
+		 * Update bucket pointer accordingly.
+		 */
+		bucket_info->bucket_idx = empty_slot_idx;
+
+		/* Claim the entry */
+		FDB_MAC_TBL_ENTRY(empty_slot_idx)->active = 1;
+
+		return FDB_MAC_TBL_ENTRY(empty_slot_idx);
+	}
+
+	/* There is empty space to the left, shift MAC table entries left */
+	left = empty_slot_idx;
+	right = mti - 1;
+	prueth_sw_fdb_move_range_left(prueth, left, right);
+
+	/* Claim the entry */
+	FDB_MAC_TBL_ENTRY(mti - 1)->active = 1;
+
+	/* There is a chance we moved something in a
+	 * different bucket, update index table
+	 */
+	prueth_sw_fdb_update_index_tbl(prueth, left, right);
+
+	return FDB_MAC_TBL_ENTRY(mti - 1);
+}
+
+static int prueth_sw_insert_fdb_entry(struct prueth_emac *emac,
+				      const u8 *mac, u8 is_static)
+{
+	struct prueth *prueth = emac->prueth;
+	struct prueth_emac *other_emac;
+	struct fdb_tbl *fdb = prueth->fdb_tbl;
+	struct fdb_mac_tbl_array_t *mt = fdb->mac_tbl_a;
+	struct fdb_index_tbl_entry_t *bucket_info;
+	struct fdb_mac_tbl_entry_t *mac_info;
+	u8 hash_val, mac_tbl_idx;
+	s16 ret;
+
+	other_emac = prueth->emac[(emac->port_id ^ 0x3) - 1];
+
+	if (fdb->total_entries == FDB_MAC_TBL_MAX_ENTRIES)
+		return -ENOMEM;
+
+	if (mac_cmp(mac, emac->mac_addr) == 0 ||
+	    mac_cmp(mac, other_emac->mac_addr) == 0) {
+		/* Don't insert fdb of own mac addr */
+		return -EINVAL;
+	}
+
+	/* Empty mac table entries are available */
+
+	/* Get the bucket that the mac belongs to */
+	hash_val = prueth_sw_fdb_hash(mac);
+	bucket_info = FDB_IDX_TBL_ENTRY(hash_val);
+
+	if (!bucket_info->bucket_entries) {
+		mac_tbl_idx = prueth_sw_fdb_find_open_slot(fdb);
+		bucket_info->bucket_idx = mac_tbl_idx;
+	}
+
+	ret = prueth_sw_fdb_find_bucket_insert_point(mt, bucket_info, mac);
+
+	if (ret < 0)
+		/* mac is already in fdb table */
+		return 0;
+
+	mac_tbl_idx = ret;
+
+	prueth_sw_fdb_spin_lock(fdb);
+
+	mac_info = prueth_sw_get_empty_mac_tbl_entry(prueth, bucket_info,
+						     mac_tbl_idx, NULL);
+	if (!mac_info) {
+		/* Should not happen */
+		dev_warn(prueth->dev, "OUT of MEM\n");
+		return -ENOMEM;
+	}
+
+	mac_copy(mac_info->mac, mac);
+	mac_info->active = 1;
+	mac_info->age = 0;
+	mac_info->port = emac->port_id - 1;
+	mac_info->is_static = is_static;
+
+	bucket_info->bucket_entries++;
+	fdb->total_entries++;
+
+	prueth_sw_fdb_spin_unlock(fdb);
+
+	dev_dbg(prueth->dev, "added fdb: %pM port=%d total_entries=%u\n",
+		mac, emac->port_id, fdb->total_entries);
+
+	return 0;
+}
+
+static int prueth_sw_delete_fdb_entry(struct prueth_emac *emac,
+				      const u8 *mac, u8 is_static)
+{
+	struct prueth *prueth = emac->prueth;
+	struct fdb_tbl *fdb = prueth->fdb_tbl;
+	struct fdb_mac_tbl_array_t *mt = fdb->mac_tbl_a;
+	struct fdb_index_tbl_entry_t *bucket_info;
+	struct fdb_mac_tbl_entry_t *mac_info;
+	u8 hash_val, mac_tbl_idx;
+	s16 ret, left, right;
+
+	if (fdb->total_entries == 0)
+		return 0;
+
+	/* Get the bucket that the mac belongs to */
+	hash_val = prueth_sw_fdb_hash(mac);
+	bucket_info = FDB_IDX_TBL_ENTRY(hash_val);
+
+	ret = prueth_sw_fdb_search(mt, bucket_info, mac);
+	if (ret < 0)
+		return ret;
+
+	mac_tbl_idx = ret;
+	mac_info = FDB_MAC_TBL_ENTRY(mac_tbl_idx);
+
+	prueth_sw_fdb_spin_lock(fdb);
+
+	/* Shift all elements in bucket to the left. No need to
+	 * update index table since only shifting within bucket.
+	 */
+	left = mac_tbl_idx;
+	right = bucket_info->bucket_idx + bucket_info->bucket_entries - 1;
+	prueth_sw_fdb_move_range_left(prueth, left, right);
+
+	/* Remove end of bucket from table */
+	mac_info = FDB_MAC_TBL_ENTRY(right);
+	mac_info->active = 0;
+	bucket_info->bucket_entries--;
+	fdb->total_entries--;
+
+	prueth_sw_fdb_spin_unlock(fdb);
+
+	dev_dbg(prueth->dev, "del fdb: %pM total_entries=%u\n",
+		mac, fdb->total_entries);
+
+	return 0;
+}
+
+static void prueth_sw_fdb_work(struct work_struct *work)
+{
+	struct prueth_sw_fdb_work *fdb_work =
+		container_of(work, struct prueth_sw_fdb_work, work);
+	struct prueth_emac *emac = fdb_work->emac;
+
+	rtnl_lock();
+	switch (fdb_work->event) {
+	case FDB_LEARN:
+		prueth_sw_insert_fdb_entry(emac, fdb_work->addr, 0);
+		break;
+	default:
+		break;
+	}
+	rtnl_unlock();
+
+	kfree(fdb_work);
+	dev_put(emac->ndev);
+}
+
+static int prueth_sw_learn_fdb(struct prueth_emac *emac, u8 *src_mac)
+{
+	struct prueth_sw_fdb_work *fdb_work;
+
+	fdb_work = kzalloc(sizeof(*fdb_work), GFP_ATOMIC);
+	if (WARN_ON(!fdb_work))
+		return -ENOMEM;
+
+	INIT_WORK(&fdb_work->work, prueth_sw_fdb_work);
+
+	fdb_work->event = FDB_LEARN;
+	fdb_work->emac  = emac;
+	ether_addr_copy(fdb_work->addr, src_mac);
+
+	dev_hold(emac->ndev);
+	queue_work(system_long_wq, &fdb_work->work);
+	return 0;
+}
 static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 			  struct prueth_packet_info pkt_info,
 			  const struct prueth_queue_info *rxqueue)
@@ -2150,6 +2636,12 @@ static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 			if (ret == -EAGAIN)
 				/* wait for cut-thru ts */
 				goto out;
+		}
+
+		if (PRUETH_IS_SWITCH(emac->prueth)) {
+			skb->offload_fwd_mark = emac->offload_fwd_mark;
+			if (!pkt_info.lookup_success)
+				prueth_sw_learn_fdb(emac, skb->data + ETH_ALEN);
 		}
 
 		/* send packet up the stack */
@@ -3589,9 +4081,16 @@ static int emac_ndo_open(struct net_device *ndev)
 		}
 
 		if (PRUETH_IS_SWITCH(prueth)) {
+			prueth->fdb_tbl = kmalloc(sizeof(*prueth->fdb_tbl),
+						  GFP_KERNEL);
+			if (!prueth->fdb_tbl) {
+				ret = -ENOMEM;
+				goto clean_debugfs_hsr_prp;
+			}
+
 			ret = prueth_sw_debugfs_init(prueth);
 			if (ret)
-				goto clean_debugfs_hsr_prp;
+				goto clean_sw_fdb;
 		}
 
 		if (PRUETH_HAS_PTP(prueth)) {
@@ -3646,6 +4145,9 @@ static int emac_ndo_open(struct net_device *ndev)
 			prueth->fw_offsets->mc_filter_tbl =
 				MULTICAST_FILTER_TABLE;
 		}
+
+		if (PRUETH_IS_SWITCH(prueth))
+			prueth_sw_fdb_tbl_init(prueth);
 	}
 
 	/* Init emac debugfs */
@@ -3749,6 +4251,11 @@ clean_debugfs_emac:
 clean_debugfs_sw:
 	if (PRUETH_IS_SWITCH(prueth))
 		prueth_sw_debugfs_term(prueth);
+clean_sw_fdb:
+	if (PRUETH_IS_SWITCH(prueth)) {
+		kfree(prueth->fdb_tbl);
+		prueth->fdb_tbl = NULL;
+	}
 clean_debugfs_hsr_prp:
 	if (PRUETH_HAS_RED(prueth))
 		prueth_hsr_prp_debugfs_term(prueth);
@@ -3814,8 +4321,12 @@ static int sw_emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 	rproc_shutdown(prueth->pru0);
 	rproc_shutdown(prueth->pru1);
 
-	if (!PRUETH_IS_SWITCH(emac->prueth))
+	if (!PRUETH_IS_SWITCH(emac->prueth)) {
 		emac_lre_get_stats(emac, &emac->prueth->lre_stats);
+	} else {
+		kfree(prueth->fdb_tbl);
+		prueth->fdb_tbl = NULL;
+	}
 
 	if (PRUETH_HAS_RED(emac->prueth)) {
 		hrtimer_cancel(&prueth->tbl_check_timer);
@@ -4184,7 +4695,7 @@ static void prueth_set_rx_mode(struct prueth_emac *emac)
 	struct netdev_hw_addr *ha;
 	u8 hash;
 
-	if (PRUETH_IS_EMAC(prueth)) {
+	if (PRUETH_IS_EMAC(prueth) || PRUETH_IS_SWITCH(prueth)) {
 		ram = (emac->port_id == PRUETH_PORT_MII0) ?
 				prueth->mem[PRUETH_MEM_DRAM0].va :
 				prueth->mem[PRUETH_MEM_DRAM1].va;
@@ -4366,7 +4877,7 @@ static int emac_add_del_vid(struct prueth_emac *emac,
 	u32 vlan_ctrl_byte = prueth->fw_offsets->vlan_ctrl_byte;
 	u32 vlan_filter_tbl = prueth->fw_offsets->vlan_filter_tbl;
 
-	if (PRUETH_IS_EMAC(prueth)) {
+	if (PRUETH_IS_EMAC(prueth) || PRUETH_IS_SWITCH(prueth)) {
 		ram = (emac->port_id == PRUETH_PORT_MII0) ?
 				prueth->mem[PRUETH_MEM_DRAM0].va :
 				prueth->mem[PRUETH_MEM_DRAM1].va;
@@ -5053,6 +5564,304 @@ static const struct lredev_ops emac_lredev_ops = {
 	.lredev_set_sv_vlan_id = emac_lredev_set_sv_vlan_id,
 };
 
+/* switchdev ops */
+static int prueth_sw_port_vlan_add(struct prueth_emac *emac,
+				   bool untag, bool pvid,
+				   u16 vid, struct net_device *orig_dev)
+{
+	bool cpu_port = netif_is_bridge_master(orig_dev);
+	struct prueth *prueth = emac->prueth;
+	int unreg_mcast_mask = 0;
+	int reg_mcast_mask = 0;
+	int untag_mask = 0;
+	int port_mask;
+	int ret = 0;
+	u32 flags;
+
+	if (cpu_port) {
+		port_mask = BIT(PRUETH_PORT_HOST);
+		flags = orig_dev->flags;
+		unreg_mcast_mask = port_mask;
+	} else {
+		port_mask = BIT(emac->port_id);
+		flags = emac->ndev->flags;
+	}
+
+	if (flags & IFF_MULTICAST)
+		reg_mcast_mask = port_mask;
+
+	if (untag)
+		untag_mask = port_mask;
+
+	/* TODO: add vlan */
+	dev_info(prueth->dev, "VID add: %s: vid:%u ports:%X\n",
+		 emac->ndev->name, vid, port_mask);
+
+	return ret;
+}
+
+static int prueth_sw_port_vlans_add(struct prueth_emac *emac,
+				    const struct switchdev_obj_port_vlan *vlan,
+				    struct switchdev_trans *trans)
+{
+	struct prueth *prueth = emac->prueth;
+	bool untag = vlan->flags & BRIDGE_VLAN_INFO_UNTAGGED;
+	struct net_device *orig_dev = vlan->obj.orig_dev;
+	bool cpu_port = netif_is_bridge_master(orig_dev);
+	bool pvid = vlan->flags & BRIDGE_VLAN_INFO_PVID;
+	u16 vid;
+
+	dev_info(prueth->dev, "VIDs add: %s: vid:%u - %u flags:%X\n",
+		 emac->ndev->name, vlan->vid_begin, vlan->vid_end, vlan->flags);
+
+	if (cpu_port && !(vlan->flags & BRIDGE_VLAN_INFO_BRENTRY))
+		return 0;
+
+	if (switchdev_trans_ph_prepare(trans))
+		return 0;
+
+	for (vid = vlan->vid_begin; vid <= vlan->vid_end; vid++) {
+		int err;
+
+		err = prueth_sw_port_vlan_add(emac, untag, pvid, vid, orig_dev);
+		if (err)
+			return err;
+	}
+
+	return 0;
+}
+
+static int prueth_sw_port_vlan_del(struct prueth_emac *emac, u16 vid,
+				   struct net_device *orig_dev)
+{
+	bool cpu_port = netif_is_bridge_master(orig_dev);
+	struct prueth *prueth = emac->prueth;
+	int port_mask;
+	int ret = 0;
+
+	if (cpu_port)
+		port_mask = BIT(PRUETH_PORT_HOST);
+	else
+		port_mask = BIT(emac->port_id);
+
+	/* TODO: del mcast & vlan */
+	dev_info(prueth->dev, "VID del: %s: vid:%u ports:%X\n",
+		 emac->ndev->name, vid, port_mask);
+
+	return ret;
+}
+
+static int prueth_sw_port_vlans_del(struct prueth_emac *emac,
+				    const struct switchdev_obj_port_vlan *vlan)
+
+{
+	struct net_device *orig_dev = vlan->obj.orig_dev;
+	struct prueth *prueth = emac->prueth;
+	u16 vid;
+
+	dev_info(prueth->dev, "VIDs del: %s: vid:%u - %u flags:%X\n",
+		 emac->ndev->name, vlan->vid_begin, vlan->vid_end, vlan->flags);
+
+	for (vid = vlan->vid_begin; vid <= vlan->vid_end; vid++) {
+		int err;
+
+		err = prueth_sw_port_vlan_del(emac, vid, orig_dev);
+		if (err)
+			return err;
+	}
+
+	return 0;
+}
+
+static int prueth_sw_port_mdb_add(struct prueth_emac *emac,
+				  struct switchdev_obj_port_mdb *mdb,
+				  struct switchdev_trans *trans)
+{
+	struct net_device *orig_dev = mdb->obj.orig_dev;
+	bool cpu_port = netif_is_bridge_master(orig_dev);
+	struct prueth *prueth = emac->prueth;
+	int port_mask;
+	int err = 0;
+
+	if (switchdev_trans_ph_prepare(trans))
+		return 0;
+
+	if (cpu_port)
+		port_mask = BIT(PRUETH_PORT_HOST);
+	else
+		port_mask = BIT(emac->port_id);
+
+	/* TODO: add mcast */
+	dev_info(prueth->dev, "MDB add: %s: vid %u:%pM  ports: %X\n",
+		 emac->ndev->name, mdb->vid, mdb->addr, port_mask);
+
+	return err;
+}
+
+static int prueth_sw_port_mdb_del(struct prueth_emac *emac,
+				  struct switchdev_obj_port_mdb *mdb)
+
+{
+	struct net_device *orig_dev = mdb->obj.orig_dev;
+	bool cpu_port = netif_is_bridge_master(orig_dev);
+	struct prueth *prueth = emac->prueth;
+	int del_mask;
+	int err = 0;
+
+	if (cpu_port)
+		del_mask = BIT(PRUETH_PORT_HOST);
+	else
+		del_mask = BIT(emac->port_id);
+
+	/* TODO: del mcast */
+	dev_info(prueth->dev, "MDB del: %s: vid %u:%pM  ports: %X\n",
+		 emac->ndev->name, mdb->vid, mdb->addr, del_mask);
+
+	return err;
+}
+
+static int prueth_switchdev_attr_get(struct net_device *ndev,
+				     struct switchdev_attr *attr)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
+	int err = 0;
+	unsigned char *ppid;
+
+	switch (attr->id) {
+	case SWITCHDEV_ATTR_ID_PORT_PARENT_ID:
+		if (prueth->pruss_id == PRUSS1)
+			ppid = "AM57XX-PRUSS1";
+		else
+			ppid = "AM57XX-PRUSS2";
+
+		attr->u.ppid.id_len = strlen(ppid);
+		memcpy(&attr->u.ppid.id, ppid, strlen(ppid));
+
+		dev_dbg(prueth->dev, "attr get PPID %s: port:%u\n",
+			ppid, emac->port_id);
+
+		return 0;
+	case SWITCHDEV_ATTR_ID_PORT_BRIDGE_FLAGS:
+		dev_info(prueth->dev, "attr get: br flags port:%u\n",
+			 emac->port_id);
+		return -EOPNOTSUPP;
+	case SWITCHDEV_ATTR_ID_PORT_BRIDGE_FLAGS_SUPPORT:
+		dev_info(prueth->dev, "attr get: br flags support port:%u\n",
+			 emac->port_id);
+		return -EOPNOTSUPP;
+	default:
+		dev_info(prueth->dev, "attr get: id %d (NOTSUPP) port: %u\n",
+			 attr->id, emac->port_id);
+
+		err = -EOPNOTSUPP;
+		break;
+	}
+
+	return err;
+}
+
+static int prueth_switchdev_attr_set(struct net_device *ndev,
+				     const struct switchdev_attr *attr,
+				     struct switchdev_trans *trans)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
+	int err = 0;
+
+	switch (attr->id) {
+	case SWITCHDEV_ATTR_ID_PORT_STP_STATE:
+		prueth_sw_port_set_stp_state(prueth, emac->port_id,
+					     attr->u.stp_state);
+
+		dev_dbg(prueth->dev, "attr set: stp state:%u port:%u\n",
+			attr->u.stp_state, emac->port_id);
+		break;
+	case SWITCHDEV_ATTR_ID_PORT_BRIDGE_FLAGS:
+		/* TODO */
+		dev_info(prueth->dev, "attr set: br flags:0x%lx port:%u\n",
+			 attr->u.brport_flags, emac->port_id);
+		break;
+	case SWITCHDEV_ATTR_ID_BRIDGE_AGEING_TIME:
+		/* TODO */
+		dev_info(prueth->dev, "attr set: ageing time:%ld port:%u\n",
+			 attr->u.ageing_time, emac->port_id);
+		break;
+	default:
+		dev_info(prueth->dev, "attr set: id %d (NOTSUPP) port:%u\n",
+			 attr->id, emac->port_id);
+
+		err = -EOPNOTSUPP;
+		break;
+	}
+
+	return err;
+}
+
+static int prueth_switchdev_obj_add(struct net_device *ndev,
+				    const struct switchdev_obj *obj,
+				    struct switchdev_trans *trans)
+{
+	struct switchdev_obj_port_vlan *vlan = SWITCHDEV_OBJ_PORT_VLAN(obj);
+	struct switchdev_obj_port_mdb *mdb = SWITCHDEV_OBJ_PORT_MDB(obj);
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
+	int err = 0;
+
+	dev_dbg(prueth->dev, "obj_add: id %u port: %u\n",
+		obj->id, emac->port_id);
+
+	switch (obj->id) {
+	case SWITCHDEV_OBJ_ID_PORT_VLAN:
+		err = prueth_sw_port_vlans_add(emac, vlan, trans);
+		break;
+	case SWITCHDEV_OBJ_ID_PORT_MDB:
+	case SWITCHDEV_OBJ_ID_HOST_MDB:
+		err = prueth_sw_port_mdb_add(emac, mdb, trans);
+		break;
+	default:
+		err = -EOPNOTSUPP;
+		break;
+	}
+
+	return err;
+}
+
+static int prueth_switchdev_obj_del(struct net_device *ndev,
+				    const struct switchdev_obj *obj)
+{
+	struct switchdev_obj_port_vlan *vlan = SWITCHDEV_OBJ_PORT_VLAN(obj);
+	struct switchdev_obj_port_mdb *mdb = SWITCHDEV_OBJ_PORT_MDB(obj);
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
+	int err = 0;
+
+	if (!PRUETH_IS_SWITCH(prueth))
+		return -EOPNOTSUPP;
+
+	switch (obj->id) {
+	case SWITCHDEV_OBJ_ID_PORT_VLAN:
+		err = prueth_sw_port_vlans_del(emac, vlan);
+		break;
+	case SWITCHDEV_OBJ_ID_PORT_MDB:
+	case SWITCHDEV_OBJ_ID_HOST_MDB:
+		err = prueth_sw_port_mdb_del(emac, mdb);
+		break;
+	default:
+		err = -EOPNOTSUPP;
+		break;
+	}
+
+	return err;
+}
+
+static const struct switchdev_ops prueth_switchdev_ops = {
+	.switchdev_port_attr_get = prueth_switchdev_attr_get,
+	.switchdev_port_attr_set = prueth_switchdev_attr_set,
+	.switchdev_port_obj_add	 = prueth_switchdev_obj_add,
+	.switchdev_port_obj_del	 = prueth_switchdev_obj_del,
+};
+
 static int prueth_netdev_init(struct prueth *prueth,
 			      struct device_node *eth_node)
 {
@@ -5198,6 +6007,10 @@ static int prueth_netdev_init(struct prueth *prueth,
 
 	ndev->netdev_ops = &emac_netdev_ops;
 	ndev->ethtool_ops = &emac_ethtool_ops;
+
+	if (PRUETH_IS_SWITCH(prueth))
+		ndev->switchdev_ops = &prueth_switchdev_ops;
+
 #ifdef CONFIG_HSR_PRP
 	ndev->lredev_ops = &emac_lredev_ops;
 #endif
@@ -5255,6 +6068,276 @@ static void prueth_get_mc_mac_mask(struct prueth_emac *emac, char *mc_mask)
 		mc_mask);
 	/* assign default mask */
 	memset(&emac->mc_mac_mask[0], 0xff, ETH_ALEN);
+}
+
+/* switchdev notifiers */
+static bool prueth_sw_port_dev_check(const struct net_device *ndev)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
+
+	if (ndev->netdev_ops != &emac_netdev_ops)
+		return false;
+
+	if (!PRUETH_IS_SWITCH(prueth))
+		return false;
+
+	return true;
+}
+
+void prueth_sw_port_offload_fwd_mark_update(struct prueth *prueth)
+{
+	int set_val = 0;
+	int i;
+	u8 all_slaves = BIT(PRUETH_PORT_MII0) | BIT(PRUETH_PORT_MII1);
+
+	if (prueth->br_members == all_slaves)
+		set_val = 1;
+
+	dev_dbg(prueth->dev, "set offload_fwd_mark %d, mbrs=0x%x\n",
+		set_val, prueth->br_members);
+
+	for (i = 0; i < PRUETH_NUM_MACS; i++)
+		prueth->emac[i]->offload_fwd_mark = set_val;
+}
+
+static int prueth_sw_ndev_port_link(struct net_device *ndev,
+				    struct net_device *br_ndev)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
+
+	dev_dbg(prueth->dev, "%s: br_mbrs=0x%x %s\n",
+		__func__, prueth->br_members, ndev->name);
+
+	if (!prueth->br_members) {
+		prueth->hw_bridge_dev = br_ndev;
+	} else {
+		/* This is adding the port to a second bridge, this is
+		 * unsupported
+		 */
+		if (prueth->hw_bridge_dev != br_ndev)
+			return -EOPNOTSUPP;
+	}
+
+	prueth->br_members |= BIT(emac->port_id);
+
+	prueth_sw_port_offload_fwd_mark_update(prueth);
+
+	return NOTIFY_DONE;
+}
+
+static void prueth_sw_ndev_port_unlink(struct net_device *ndev)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	struct prueth *prueth = emac->prueth;
+
+	dev_info(prueth->dev, "emac_sw_ndev_port_unlink\n");
+
+	prueth->br_members &= ~BIT(emac->port_id);
+
+	prueth_sw_port_offload_fwd_mark_update(prueth);
+
+	if (!prueth->br_members)
+		prueth->hw_bridge_dev = NULL;
+}
+
+static int prueth_sw_ndev_event(struct notifier_block *unused,
+				unsigned long event, void *ptr)
+{
+	struct net_device *ndev = netdev_notifier_info_to_dev(ptr);
+	struct netdev_notifier_changeupper_info *info;
+	int ret = NOTIFY_DONE;
+
+	if (!prueth_sw_port_dev_check(ndev))
+		return NOTIFY_DONE;
+
+	switch (event) {
+	case NETDEV_CHANGEUPPER:
+		info = ptr;
+
+		if (netif_is_bridge_master(info->upper_dev)) {
+			if (info->linking)
+				ret = prueth_sw_ndev_port_link(ndev,
+							       info->upper_dev);
+			else
+				prueth_sw_ndev_port_unlink(ndev);
+		}
+		break;
+	default:
+		return NOTIFY_DONE;
+	}
+
+	return notifier_from_errno(ret);
+}
+
+static struct notifier_block prueth_sw_ndev_nb __read_mostly = {
+	.notifier_call = prueth_sw_ndev_event,
+};
+
+/* switchev event work */
+struct prueth_sw_switchdev_event_work {
+	struct work_struct work;
+	struct switchdev_notifier_fdb_info fdb_info;
+	struct prueth_emac *emac;
+	unsigned long event;
+};
+
+static void
+prueth_sw_fdb_offload_notify(struct net_device *ndev,
+			     struct switchdev_notifier_fdb_info *rcv)
+{
+	struct switchdev_notifier_fdb_info info;
+
+	info.addr = rcv->addr;
+	info.vid = rcv->vid;
+	call_switchdev_notifiers(SWITCHDEV_FDB_OFFLOADED, ndev, &info.info);
+}
+
+static void prueth_sw_fdb_add(struct prueth_emac *emac,
+			      struct switchdev_notifier_fdb_info *fdb)
+{
+	prueth_sw_insert_fdb_entry(emac, fdb->addr, 1);
+}
+
+static void prueth_sw_fdb_del(struct prueth_emac *emac,
+			      struct switchdev_notifier_fdb_info *fdb)
+{
+	prueth_sw_delete_fdb_entry(emac, fdb->addr, 1);
+}
+
+static void prueth_sw_switchdev_event_work(struct work_struct *work)
+{
+	struct prueth_sw_switchdev_event_work *switchdev_work =
+		container_of(work, struct prueth_sw_switchdev_event_work, work);
+	struct prueth_emac *emac = switchdev_work->emac;
+	struct switchdev_notifier_fdb_info *fdb;
+	struct prueth *prueth = emac->prueth;
+	int port = emac->port_id;
+
+	rtnl_lock();
+	switch (switchdev_work->event) {
+	case SWITCHDEV_FDB_ADD_TO_DEVICE:
+		fdb = &switchdev_work->fdb_info;
+		dev_dbg(prueth->dev,
+			"prueth fdb add: MACID = %pM vid = %u flags = %u -- port %d\n",
+			fdb->addr, fdb->vid, fdb->added_by_user, port);
+
+		if (!fdb->added_by_user)
+			break;
+
+		prueth_sw_fdb_add(emac, fdb);
+		prueth_sw_fdb_offload_notify(emac->ndev, fdb);
+		break;
+	case SWITCHDEV_FDB_DEL_TO_DEVICE:
+		fdb = &switchdev_work->fdb_info;
+		dev_dbg(prueth->dev,
+			"prueth fdb del: MACID = %pM vid = %u flags = %u -- port %d\n",
+			fdb->addr, fdb->vid, fdb->added_by_user, port);
+
+		if (!fdb->added_by_user)
+			break;
+
+		prueth_sw_fdb_del(emac, fdb);
+		break;
+	default:
+		break;
+	}
+	rtnl_unlock();
+
+	kfree(switchdev_work->fdb_info.addr);
+	kfree(switchdev_work);
+	dev_put(emac->ndev);
+}
+
+/* called under rcu_read_lock() */
+static int prueth_sw_switchdev_event(struct notifier_block *unused,
+				     unsigned long event, void *ptr)
+{
+	struct net_device *ndev = switchdev_notifier_info_to_dev(ptr);
+	struct switchdev_notifier_fdb_info *fdb_info = ptr;
+	struct prueth_sw_switchdev_event_work *switchdev_work;
+	struct prueth_emac *emac = netdev_priv(ndev);
+
+	netdev_dbg(ndev, "switchdev_event: event=%lu", event);
+
+	if (!prueth_sw_port_dev_check(ndev))
+		return NOTIFY_DONE;
+
+	switchdev_work = kzalloc(sizeof(*switchdev_work), GFP_ATOMIC);
+	if (WARN_ON(!switchdev_work))
+		return NOTIFY_BAD;
+
+	INIT_WORK(&switchdev_work->work, prueth_sw_switchdev_event_work);
+	switchdev_work->emac = emac;
+	switchdev_work->event = event;
+
+	switch (event) {
+	case SWITCHDEV_FDB_ADD_TO_DEVICE:
+	case SWITCHDEV_FDB_DEL_TO_DEVICE:
+		memcpy(&switchdev_work->fdb_info, ptr,
+		       sizeof(switchdev_work->fdb_info));
+		switchdev_work->fdb_info.addr = kzalloc(ETH_ALEN, GFP_ATOMIC);
+		if (!switchdev_work->fdb_info.addr)
+			goto err_addr_alloc;
+		ether_addr_copy((u8 *)switchdev_work->fdb_info.addr,
+				fdb_info->addr);
+		dev_hold(ndev);
+		break;
+	default:
+		kfree(switchdev_work);
+		return NOTIFY_DONE;
+	}
+
+	queue_work(system_long_wq, &switchdev_work->work);
+
+	return NOTIFY_DONE;
+
+err_addr_alloc:
+	kfree(switchdev_work);
+	return NOTIFY_BAD;
+}
+
+static struct notifier_block prueth_sw_switchdev_notifier = {
+	.notifier_call = prueth_sw_switchdev_event,
+};
+
+static int prueth_sw_register_notifiers(struct prueth *prueth)
+{
+	int ret = 0;
+
+	if (sw_notifiers_registered)
+		return 0;
+
+	ret = register_netdevice_notifier(&prueth_sw_ndev_nb);
+	if (ret) {
+		dev_err(prueth->dev,
+			"register netdevice notifier failed ret: %d\n", ret);
+		return ret;
+	}
+
+	ret = register_switchdev_notifier(&prueth_sw_switchdev_notifier);
+	if (ret) {
+		dev_err(prueth->dev,
+			"register switchdev notifier fail ret:%d\n", ret);
+		unregister_netdevice_notifier(&prueth_sw_ndev_nb);
+	}
+
+	if (!ret) {
+		dev_err(prueth->dev, "registered notifiers\n");
+		++sw_notifiers_registered;
+	}
+
+	return ret;
+}
+
+static void prueth_sw_unregister_notifiers(struct prueth *prueth)
+{
+	if (--sw_notifiers_registered)
+		return;
+
+	unregister_switchdev_notifier(&prueth_sw_switchdev_notifier);
+	unregister_netdevice_notifier(&prueth_sw_ndev_nb);
 }
 
 static int prueth_probe(struct platform_device *pdev)
@@ -5542,6 +6625,12 @@ static int prueth_probe(struct platform_device *pdev)
 		prueth->registered_netdevs[PRUETH_MAC1] = prueth->emac[PRUETH_MAC1]->ndev;
 	}
 
+	if (PRUETH_IS_SWITCH(prueth)) {
+		ret = prueth_sw_register_notifiers(prueth);
+		if (ret)
+			goto debugfs1_exit;
+	}
+
 	dev_info(dev, "TI PRU ethernet (type %u) driver initialized\n",
 		 prueth->eth_type);
 
@@ -5614,6 +6703,9 @@ static int prueth_remove(struct platform_device *pdev)
 		prueth_debugfs_term(prueth->emac[i]);
 		unregister_netdev(prueth->registered_netdevs[i]);
 	}
+
+	if (PRUETH_IS_SWITCH(prueth))
+		prueth_sw_unregister_notifiers(prueth);
 
 	for (i = 0; i < PRUETH_NUM_MACS; i++) {
 		eth_node = prueth->eth_node[i];
