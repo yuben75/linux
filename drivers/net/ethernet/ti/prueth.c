@@ -5090,10 +5090,13 @@ static int prueth_netdev_init(struct prueth *prueth,
 		goto free;
 	}
 
-	emac->phydev->advertising &= ~(ADVERTISED_1000baseT_Full |
-			ADVERTISED_1000baseT_Half);
-	emac->phydev->supported &= ~(SUPPORTED_1000baseT_Full |
-			SUPPORTED_1000baseT_Half);
+	/* remove unsupported modes */
+	emac->phydev->supported &= ~(PHY_10BT_FEATURES |
+				     SUPPORTED_100baseT_Half |
+				     PHY_1000BT_FEATURES |
+				     SUPPORTED_Pause |
+				     SUPPORTED_Asym_Pause);
+	emac->phydev->advertising = emac->phydev->supported;
 
 	if (PRUETH_HAS_HSR(prueth))
 		ndev->features |= (NETIF_F_HW_HSR_RX_OFFLOAD |
