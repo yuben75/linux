@@ -29,6 +29,11 @@
  * =============================================================================
  * 0..7		Index		points to index in buffer queue, max 256 x 32
  *				byte blocks can be addressed
+ * 6            LookupSuccess   For switch, FDB lookup was successful (source
+ *                              MAC address found in FDB).
+ *                              For RED, NodeTable lookup was successful.
+ * 7            Flood           Packet should be flooded (destination MAC
+ *                              address found in FDB). For switch only.
  * 8..12	Block_length	number of valid bytes in this specific block.
  *				Will be <=32 bytes on last block of packet
  * 13		More		"More" bit indicating that there are more blocks
@@ -62,6 +67,9 @@
 
 #define PRUETH_BD_LOOKUP_SUCCESS_MASK	BIT(6)
 #define PRUETH_BD_LOOKUP_SUCCESS_SHIFT	6
+
+#define PRUETH_BD_SW_FLOOD_MASK		BIT(7)
+#define PRUETH_BD_SW_FLOOD_SHIFT	7
 
 #define	PRUETH_BD_SHADOW_MASK		BIT(14)
 #define	PRUETH_BD_SHADOW_SHIFT		14
@@ -122,6 +130,8 @@
 #define PORT_MAC_ADDR			(STATISTICS_OFFSET + STAT_SIZE + 18)
 /* 1 byte */
 #define RX_INT_STATUS_OFFSET		(STATISTICS_OFFSET + STAT_SIZE + 24)
+/* 4 bytes ? */
+#define STP_INVALID_STATE_OFFSET        (STATISTICS_OFFSET + STAT_SIZE + 28)
 
 /* DRAM1 Offsets for Switch */
 /* 4 queue descriptors for port 0 (host receive) */
@@ -348,5 +358,11 @@
 #define INTR_PAC_STATUS_OFFSET_PRU1             0x1FAE
 /* 1 byte | 0 : Interrupt Pacing disabled | 1 : Interrupt Pacing enabled */
 #define INTR_PAC_STATUS_OFFSET_PRU0             0x1FAF
+
+#define V2_1_FDB_TBL_LOC          PRUETH_MEM_SHARED_RAM
+#define V2_1_FDB_TBL_OFFSET       0x2000
+
+#define FDB_INDEX_TBL_MAX_ENTRIES     256
+#define FDB_MAC_TBL_MAX_ENTRIES       256
 
 #endif /* __ICSS_SWITCH_H */
