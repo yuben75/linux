@@ -98,8 +98,8 @@
 #define IEP_GLOBAL_CFG_REG_INCR1_VAL	0x111
 #define IEP_GLOBAL_CFG_REG_INCR5_VAL	0x551
 
-/* 10 ms width */
-#define IEP_DEFAULT_PPS_WIDTH        (PRUSS_IEP_CLOCK_RATE / 100)
+/* 20 ms width */
+#define IEP_DEFAULT_PPS_WIDTH        (PRUSS_IEP_CLOCK_RATE / 50)
 
 /* 1ms pulse sync interval */
 #define PULSE_SYNC_INTERVAL          1000000
