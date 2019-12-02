@@ -160,6 +160,7 @@ config CPMAC
 config TI_PRUETH
 	tristate "TI PRU Ethernet EMAC driver"
 	depends on PRU_REMOTEPROC
+	select NET_SWITCHDEV
 	---help---
 	  Support single or dual EMAC over PRUSS.
 
