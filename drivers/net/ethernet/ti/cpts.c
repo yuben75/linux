@@ -66,10 +66,13 @@ struct cpts_skb_cb_data {
 #define CPTS_TS_THRESH		98000000ULL
 #define CPTS_TMR_CLK_RATE	100000000
 #define CPTS_TMR_CLK_PERIOD	(1000000000 / CPTS_TMR_CLK_RATE)
+#define CPTS_DEFAULT_PPS_WIDTH_MS	20
+#define CPTS_DEFAULT_PPS_WIDTH_NS	(CPTS_DEFAULT_PPS_WIDTH_MS * 1000000UL)
 #define CPTS_TMR_RELOAD_CNT	(0xFFFFFFFFUL - \
 				 100000000UL / CPTS_TMR_CLK_PERIOD + 1)
 #define CPTS_TMR_CMP_CNT	(CPTS_TMR_RELOAD_CNT + \
-				 10000000UL / CPTS_TMR_CLK_PERIOD)
+				 CPTS_DEFAULT_PPS_WIDTH_NS / \
+				 CPTS_TMR_CLK_PERIOD)
 #define CPTS_MAX_MMR_ACCESS_TIME	1000
 #define CPTS_NOM_MMR_ACCESS_TIME	250
 #define CPTS_NOM_MMR_ACCESS_TICK	(CPTS_NOM_MMR_ACCESS_TIME / \
@@ -1528,7 +1531,7 @@ static void cpts_tmr_init(struct cpts *cpts)
 
 static inline void cpts_turn_on_off_1pps_output(struct cpts *cpts, u64 ts)
 {
-	if (ts > 905000000) {
+	if (ts > (900000000 + CPTS_DEFAULT_PPS_WIDTH_NS)) {
 		if (cpts->pps_enable == 1) {
 			pinctrl_select_state(cpts->pins,
 					     cpts->pin_state_pwm_on);
@@ -1547,7 +1550,7 @@ static inline void cpts_turn_on_off_1pps_output(struct cpts *cpts, u64 ts)
 		}
 
 		pr_debug("1pps on at %llu\n", ts);
-	} else if ((ts < 100000000) && (ts >= 5000000)) {
+	} else if ((ts < 100000000) && (ts >= CPTS_DEFAULT_PPS_WIDTH_NS)) {
 		if (cpts->pps_enable == 1) {
 			pinctrl_select_state(cpts->pins,
 					     cpts->pin_state_pwm_off);
@@ -1964,7 +1967,7 @@ static irqreturn_t cpts_1pps_tmr_interrupt(int irq, void *dev_id)
 
 	writel_relaxed(OMAP_TIMER_INT_OVERFLOW, cpts->odt->irq_stat);
 	kthread_queue_delayed_work(cpts->pps_kworker, &cpts->pps_work,
-				   msecs_to_jiffies(10));
+				   msecs_to_jiffies(CPTS_DEFAULT_PPS_WIDTH_MS));
 
 	if (int_cnt <= 1000)
 		int_cnt++;
