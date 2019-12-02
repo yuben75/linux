@@ -788,4 +788,64 @@ error:
 	return rc;
 }
 
+void prueth_sw_debugfs_term(struct prueth *prueth)
+{
+	if (prueth->emac_configured)
+		return;
+
+	debugfs_remove_recursive(prueth->root_dir);
+	prueth->mc_filter_file = NULL;
+	prueth->vlan_filter_file = NULL;
+	prueth->root_dir = NULL;
+}
+
+int prueth_sw_debugfs_init(struct prueth *prueth)
+{
+	struct device *dev = prueth->dev;
+	int rc = -ENODEV;
+	struct dentry *de = NULL;
+	int id = prueth->pruss_id;
+	char dir[32];
+
+	memset(dir, 0, sizeof(dir));
+	sprintf(dir, "prueth-sw-%d", id);
+
+	de = debugfs_create_dir(dir, NULL);
+	if (!de) {
+		dev_err(dev, "Cannot create %s debugfs root\n", dir);
+		return rc;
+	}
+
+	prueth->root_dir = de;
+
+	de = debugfs_create_file("mc_filter", S_IFREG | 0444,
+				 prueth->root_dir,
+				 prueth->emac[PRUETH_PORT_MII0],
+				 &prueth_mc_filter_fops);
+	if (!de) {
+		dev_err(dev, "Cannot create switch mc_filter file\n");
+		goto error;
+	}
+	prueth->mc_filter_file = de;
+
+	de = debugfs_create_file("vlan_filter", S_IFREG | 0444,
+				 prueth->root_dir,
+				 prueth->emac[PRUETH_PORT_MII0],
+				 &prueth_vlan_filter_fops);
+	if (!de) {
+		dev_err(dev, "Cannot create switch vlan_filter file\n");
+		goto error;
+	}
+	prueth->vlan_filter_file = de;
+
+	prueth->lre_cfg_file = NULL;
+	prueth->error_stats_file = NULL;
+	prueth->nt_index = NULL;
+	prueth->nt_bins = NULL;
+
+	return 0;
+error:
+	prueth_sw_debugfs_term(prueth);
+	return rc;
+}
 #endif

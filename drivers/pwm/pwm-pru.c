@@ -340,7 +340,7 @@ static int prupwm_init_prufw(struct device_node *np, struct pru_pwm *pp)
 		return ret;
 	}
 
-	pp->pruss = pruss_get(pp->pru);
+	pp->pruss = pruss_get(pp->pru, NULL);
 	if (IS_ERR(pp->pruss)) {
 		ret = PTR_ERR(pp->pruss);
 		dev_err(dev, "failed to get pruss handle (%d)\n", ret);

@@ -580,7 +580,7 @@ static int psuart_init_pruss(struct device_node *np, struct pru_suart *pu)
 		return ret;
 	}
 
-	pu->pruss = pruss_get(pu->pru);
+	pu->pruss = pruss_get(pu->pru, NULL);
 	if (IS_ERR(pu->pruss)) {
 		ret = PTR_ERR(pu->pruss);
 		dev_err(pu->dev, "failed to get pruss handle (%d)\n", ret);
