@@ -1135,12 +1135,6 @@ static int prueth_port_enable(struct prueth *prueth, enum prueth_port port,
 	else
 		writeb(0x0, port_ctrl);
 
-	if (PRUETH_IS_SWITCH(prueth)) {
-		prueth_sw_port_set_stp_state(prueth, port,
-					     enable ? BR_STATE_FORWARDING :
-					     BR_STATE_DISABLED);
-	}
-
 	return 0;
 }
 
@@ -4241,6 +4235,10 @@ static int emac_ndo_open(struct net_device *ndev)
 	/* enable the port */
 	prueth_port_enable(prueth, emac->port_id, true);
 
+	if (PRUETH_IS_SWITCH(prueth))
+		prueth_sw_port_set_stp_state(prueth, emac->port_id,
+					     BR_STATE_LEARNING);
+
 	if (netif_msg_drv(emac))
 		dev_notice(&ndev->dev, "started\n");
 
@@ -4403,6 +4401,10 @@ static int emac_ndo_stop(struct net_device *ndev)
 	phy_stop(emac->phydev);
 
 	/* disable the mac port */
+	if (PRUETH_IS_SWITCH(prueth))
+		prueth_sw_port_set_stp_state(prueth, emac->port_id,
+					     BR_STATE_DISABLED);
+
 	prueth_port_enable(prueth, emac->port_id, 0);
 
 	mutex_lock(&prueth->mlock);
