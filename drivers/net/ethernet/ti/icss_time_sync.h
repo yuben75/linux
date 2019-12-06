@@ -102,7 +102,9 @@
 #define PTP_PREV_TX_TIMESTAMP_P1                (LINK_LOCAL_FRAME_HAS_HSR_TAG + 1)           /* 8 bytes */
 #define PTP_PREV_TX_TIMESTAMP_P2                (PTP_PREV_TX_TIMESTAMP_P1 + 8)               /* 8 bytes */
 #define PTP_CLK_IDENTITY_OFFSET                 (PTP_PREV_TX_TIMESTAMP_P2 + 8)               /* 8 bytes */
-#define PTP_SCRATCH_MEM                         (PTP_CLK_IDENTITY_OFFSET + 8)                /* 8 bytes */
+#define PTP_SCRATCH_MEM                         (PTP_CLK_IDENTITY_OFFSET + 8)                /* 16 byte */
+
+#define PTP_IPV4_UDP_E2E_ENABLE                 (PTP_SCRATCH_MEM + 16)                       /* 1 byte */
 
 /* Bit definitions for TIMESYNC_CTRL */
 #define TIMESYNC_CTRL_BG_ENABLE    BIT(0)
