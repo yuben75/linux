@@ -4300,6 +4300,8 @@ static int sw_emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 {
 	struct prueth *prueth = emac->prueth;
 	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
+	void __iomem *ram = prueth->mem[emac->dram].va;
+	u32 vlan_ctrl_byte = prueth->fw_offsets->vlan_ctrl_byte;
 
 	prueth->emac_configured &= ~BIT(emac->port_id);
 	/* disable and free rx irq */
@@ -4340,9 +4342,14 @@ static int sw_emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 		prueth->fdb_tbl = NULL;
 	}
 
-	if (PRUETH_HAS_RED(emac->prueth)) {
+	if (PRUETH_HAS_SWITCH(emac->prueth)) {
 		hrtimer_cancel(&prueth->tbl_check_timer);
 		prueth->tbl_check_period = 0;
+		if (PRUETH_IS_SWITCH(prueth)) {
+			/* Disable VLAN filter */
+			writeb(VLAN_FLTR_DIS, ram + vlan_ctrl_byte);
+			return 0;
+		}
 		kfree(prueth->mac_queue);
 		prueth->mac_queue = NULL;
 		kfree(prueth->nt);
