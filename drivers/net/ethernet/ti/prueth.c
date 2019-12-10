@@ -5937,7 +5937,8 @@ static int prueth_netdev_init(struct prueth *prueth,
 	emac->rx_hp_irq = of_irq_get_byname(eth_node->parent,
 					    "rx_red_hp");
 	/* No error check because optional, may just use 'rx' */
-	if (emac->rx_hp_irq >= 0 && emac->rx_lp_irq >= 0)
+	if (emac->rx_hp_irq >= 0 && emac->rx_lp_irq >= 0 &&
+	    !PRUETH_IS_SWITCH(prueth))
 		prueth->priority_ts = 1;
 
 	emac->rx_irq = of_irq_get_byname(eth_node, "rx");
