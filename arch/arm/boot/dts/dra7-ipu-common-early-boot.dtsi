@@ -33,6 +33,11 @@
 	ti,no-reset-on-init;
 };
 
+&timer14 {
+	ti,no-idle-on-init;
+	ti,no-reset-on-init;
+};
+
 &mmu_ipu1{
 	ti,no-idle-on-init;
 	ti,no-reset-on-init;
