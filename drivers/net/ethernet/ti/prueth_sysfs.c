@@ -18,16 +18,19 @@ static ssize_t nsp_credit_store(struct device *dev,
 				const char *buffer, size_t count)
 {
 	struct prueth_emac *emac = nsp_credit_to_emac(attr);
+	void __iomem *dram = emac->prueth->mem[emac->dram].va;
 	u32 val;
 
 	if (kstrtou32(buffer, 0, &val))
 		return -EINVAL;
 
-	if (val)
+	if (val) {
 		emac->nsp_credit =
 			(val << PRUETH_NSP_CREDIT_SHIFT) | PRUETH_NSP_ENABLE;
-	else
+	} else {
 		emac->nsp_credit = PRUETH_NSP_DISABLE;
+		writel(emac->nsp_credit, dram + STORM_PREVENTION_OFFSET);
+	}
 
 	return count;
 }
