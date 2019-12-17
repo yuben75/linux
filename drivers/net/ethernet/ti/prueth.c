@@ -231,6 +231,17 @@ void prueth_set_reg(struct prueth *prueth, enum prueth_mem region,
 }
 
 static inline
+u8 prueth_sw_port_get_stp_state(struct prueth *prueth, enum prueth_port port)
+{
+	struct fdb_tbl *t = prueth->fdb_tbl;
+	u8 state;
+
+	state = readb(port - 1 ?
+		      &t->port2_stp_cfg->state : &t->port1_stp_cfg->state);
+	return state;
+}
+
+static inline
 void prueth_sw_port_set_stp_state(struct prueth *prueth,
 				  enum prueth_port port, u8 state)
 {
@@ -2066,6 +2077,21 @@ struct prueth_sw_fdb_work {
 	int event;
 };
 
+static void prueth_sw_fdb_spin_lock(struct fdb_tbl *fdb_tbl)
+{
+	/* Take the host lock */
+	writeb(1, &fdb_tbl->locks->host_lock);
+
+	/* Wait for the PRUs to release their locks */
+	while (readb(&fdb_tbl->locks->pru_locks))
+		;
+}
+
+static inline void prueth_sw_fdb_spin_unlock(struct fdb_tbl *fdb_tbl)
+{
+	writeb(0, &fdb_tbl->locks->host_lock);
+}
+
 static void mac_copy(u8 *dst, const u8 *src)
 {
 	u8 i;
@@ -2129,11 +2155,14 @@ static u16 prueth_sw_fdb_find_open_slot(struct fdb_tbl *fdb_tbl)
 	return i;
 }
 
+/* port: 0 based: 0=port1, 1=port2 */
 static s16
-prueth_sw_fdb_find_bucket_insert_point(struct fdb_mac_tbl_array_t *mac_tbl,
+prueth_sw_fdb_find_bucket_insert_point(struct fdb_tbl *fdb,
 				       struct fdb_index_tbl_entry_t *bkt_info,
-				       const u8 *mac)
+				       const u8 *mac, const u8 port)
 {
+	struct fdb_mac_tbl_array_t *mac_tbl = fdb->mac_tbl_a;
+	struct fdb_mac_tbl_entry_t *e;
 	int i;
 	u8 mac_tbl_idx;
 	s8 cmp;
@@ -2141,32 +2170,29 @@ prueth_sw_fdb_find_bucket_insert_point(struct fdb_mac_tbl_array_t *mac_tbl,
 	mac_tbl_idx = bkt_info->bucket_idx;
 
 	for (i = 0; i < bkt_info->bucket_entries; i++, mac_tbl_idx++) {
-		cmp = mac_cmp(mac, mac_tbl->mac_tbl_entry[mac_tbl_idx].mac);
+		e = &mac_tbl->mac_tbl_entry[mac_tbl_idx];
+		cmp = mac_cmp(mac, e->mac);
 		if (cmp < 0) {
 			return mac_tbl_idx;
 		} else if (cmp == 0) {
-			/* touch the fdb */
-			mac_tbl->mac_tbl_entry[mac_tbl_idx].age = 0;
+			if (e->port != port) {
+				/* mac is already in FDB, only port is
+				 * different. So just update the port.
+				 * Note: total_entries and bucket_entries
+				 * remain the same.
+				 */
+				prueth_sw_fdb_spin_lock(fdb);
+				e->port = port;
+				prueth_sw_fdb_spin_unlock(fdb);
+			}
+
+			/* mac and port are the same, touch the fdb */
+			e->age = 0;
 			return -1;
 		}
 	}
 
 	return mac_tbl_idx;
-}
-
-static void prueth_sw_fdb_spin_lock(struct fdb_tbl *fdb_tbl)
-{
-	/* Take the host lock */
-	writeb(1, &fdb_tbl->locks->host_lock);
-
-	/* Wait for the PRUs to release their locks */
-	while (readb(&fdb_tbl->locks->pru_locks))
-		;
-}
-
-static inline void prueth_sw_fdb_spin_unlock(struct fdb_tbl *fdb_tbl)
-{
-	writeb(0, &fdb_tbl->locks->host_lock);
 }
 
 static s16
@@ -2364,7 +2390,8 @@ static int prueth_sw_insert_fdb_entry(struct prueth_emac *emac,
 		bucket_info->bucket_idx = mac_tbl_idx;
 	}
 
-	ret = prueth_sw_fdb_find_bucket_insert_point(mt, bucket_info, mac);
+	ret = prueth_sw_fdb_find_bucket_insert_point(fdb, bucket_info, mac,
+						     emac->port_id - 1);
 
 	if (ret < 0)
 		/* mac is already in fdb table */
@@ -2447,6 +2474,29 @@ static int prueth_sw_delete_fdb_entry(struct prueth_emac *emac,
 	return 0;
 }
 
+static int prueth_sw_do_purge_fdb(struct prueth_emac *emac)
+{
+	struct prueth *prueth = emac->prueth;
+	struct fdb_tbl *fdb = prueth->fdb_tbl;
+	s16 i;
+
+	if (fdb->total_entries == 0)
+		return 0;
+
+	prueth_sw_fdb_spin_lock(fdb);
+
+	for (i = 0; i < FDB_INDEX_TBL_MAX_ENTRIES; i++)
+		fdb->index_a->index_tbl_entry[i].bucket_entries = 0;
+
+	for (i = 0; i < FDB_MAC_TBL_MAX_ENTRIES; i++)
+		fdb->mac_tbl_a->mac_tbl_entry[i].active = 0;
+
+	fdb->total_entries = 0;
+
+	prueth_sw_fdb_spin_unlock(fdb);
+	return 0;
+}
+
 static void prueth_sw_fdb_work(struct work_struct *work)
 {
 	struct prueth_sw_fdb_work *fdb_work =
@@ -2457,6 +2507,9 @@ static void prueth_sw_fdb_work(struct work_struct *work)
 	switch (fdb_work->event) {
 	case FDB_LEARN:
 		prueth_sw_insert_fdb_entry(emac, fdb_work->addr, 0);
+		break;
+	case FDB_PURGE:
+		prueth_sw_do_purge_fdb(emac);
 		break;
 	default:
 		break;
@@ -2485,6 +2538,25 @@ static int prueth_sw_learn_fdb(struct prueth_emac *emac, u8 *src_mac)
 	queue_work(system_long_wq, &fdb_work->work);
 	return 0;
 }
+
+static int prueth_sw_purge_fdb(struct prueth_emac *emac)
+{
+	struct prueth_sw_fdb_work *fdb_work;
+
+	fdb_work = kzalloc(sizeof(*fdb_work), GFP_ATOMIC);
+	if (WARN_ON(!fdb_work))
+		return -ENOMEM;
+
+	INIT_WORK(&fdb_work->work, prueth_sw_fdb_work);
+
+	fdb_work->event = FDB_PURGE;
+	fdb_work->emac  = emac;
+
+	dev_hold(emac->ndev);
+	queue_work(system_long_wq, &fdb_work->work);
+	return 0;
+}
+
 static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 			  struct prueth_packet_info pkt_info,
 			  const struct prueth_queue_info *rxqueue)
@@ -4300,6 +4372,8 @@ static int sw_emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 {
 	struct prueth *prueth = emac->prueth;
 	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
+	void __iomem *ram = prueth->mem[emac->dram].va;
+	u32 vlan_ctrl_byte = prueth->fw_offsets->vlan_ctrl_byte;
 
 	prueth->emac_configured &= ~BIT(emac->port_id);
 	/* disable and free rx irq */
@@ -4340,9 +4414,14 @@ static int sw_emac_pru_stop(struct prueth_emac *emac, struct net_device *ndev)
 		prueth->fdb_tbl = NULL;
 	}
 
-	if (PRUETH_HAS_RED(emac->prueth)) {
+	if (PRUETH_HAS_SWITCH(emac->prueth)) {
 		hrtimer_cancel(&prueth->tbl_check_timer);
 		prueth->tbl_check_period = 0;
+		if (PRUETH_IS_SWITCH(prueth)) {
+			/* Disable VLAN filter */
+			writeb(VLAN_FLTR_DIS, ram + vlan_ctrl_byte);
+			return 0;
+		}
 		kfree(prueth->mac_queue);
 		prueth->mac_queue = NULL;
 		kfree(prueth->nt);
@@ -5784,11 +5863,16 @@ static int prueth_switchdev_attr_set(struct net_device *ndev,
 	struct prueth_emac *emac = netdev_priv(ndev);
 	struct prueth *prueth = emac->prueth;
 	int err = 0;
+	u8 o_state;
 
 	switch (attr->id) {
 	case SWITCHDEV_ATTR_ID_PORT_STP_STATE:
+		o_state = prueth_sw_port_get_stp_state(prueth, emac->port_id);
 		prueth_sw_port_set_stp_state(prueth, emac->port_id,
 					     attr->u.stp_state);
+
+		if (o_state != attr->u.stp_state)
+			prueth_sw_purge_fdb(emac);
 
 		dev_dbg(prueth->dev, "attr set: stp state:%u port:%u\n",
 			attr->u.stp_state, emac->port_id);
@@ -5930,7 +6014,8 @@ static int prueth_netdev_init(struct prueth *prueth,
 	emac->rx_hp_irq = of_irq_get_byname(eth_node->parent,
 					    "rx_red_hp");
 	/* No error check because optional, may just use 'rx' */
-	if (emac->rx_hp_irq >= 0 && emac->rx_lp_irq >= 0)
+	if (emac->rx_hp_irq >= 0 && emac->rx_lp_irq >= 0 &&
+	    !PRUETH_IS_SWITCH(prueth))
 		prueth->priority_ts = 1;
 
 	emac->rx_irq = of_irq_get_byname(eth_node, "rx");
