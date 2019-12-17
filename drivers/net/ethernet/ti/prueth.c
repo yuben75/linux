@@ -4558,10 +4558,11 @@ static u16 prueth_get_tx_queue_id(struct prueth *prueth, struct sk_buff *skb)
 		pcp = 0;
 	else
 		pcp = (vlan_tci & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT;
-	/* For switch, we use only QUEUE4 and QUEUE3 at the egress. QUEUE2 and
-	 * QUEUE1 are used for port to port traffic
+	/* For HSR/PRP, we use only QUEUE4 and QUEUE3 at the egress. QUEUE2 and
+	 * QUEUE1 are used for port to port traffic. Current version of SWITCH
+	 * firmware uses 4 egress queues.
 	 */
-	if (PRUETH_HAS_SWITCH(prueth))
+	if (PRUETH_HAS_RED(prueth))
 		pcp >>= 1;
 
 	return emac_pcp_tx_priority_queue_map[pcp];
