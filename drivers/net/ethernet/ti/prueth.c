@@ -2155,11 +2155,14 @@ static u16 prueth_sw_fdb_find_open_slot(struct fdb_tbl *fdb_tbl)
 	return i;
 }
 
+/* port: 0 based: 0=port1, 1=port2 */
 static s16
-prueth_sw_fdb_find_bucket_insert_point(struct fdb_mac_tbl_array_t *mac_tbl,
+prueth_sw_fdb_find_bucket_insert_point(struct fdb_tbl *fdb,
 				       struct fdb_index_tbl_entry_t *bkt_info,
-				       const u8 *mac)
+				       const u8 *mac, const u8 port)
 {
+	struct fdb_mac_tbl_array_t *mac_tbl = fdb->mac_tbl_a;
+	struct fdb_mac_tbl_entry_t *e;
 	int i;
 	u8 mac_tbl_idx;
 	s8 cmp;
@@ -2167,12 +2170,24 @@ prueth_sw_fdb_find_bucket_insert_point(struct fdb_mac_tbl_array_t *mac_tbl,
 	mac_tbl_idx = bkt_info->bucket_idx;
 
 	for (i = 0; i < bkt_info->bucket_entries; i++, mac_tbl_idx++) {
-		cmp = mac_cmp(mac, mac_tbl->mac_tbl_entry[mac_tbl_idx].mac);
+		e = &mac_tbl->mac_tbl_entry[mac_tbl_idx];
+		cmp = mac_cmp(mac, e->mac);
 		if (cmp < 0) {
 			return mac_tbl_idx;
 		} else if (cmp == 0) {
-			/* touch the fdb */
-			mac_tbl->mac_tbl_entry[mac_tbl_idx].age = 0;
+			if (e->port != port) {
+				/* mac is already in FDB, only port is
+				 * different. So just update the port.
+				 * Note: total_entries and bucket_entries
+				 * remain the same.
+				 */
+				prueth_sw_fdb_spin_lock(fdb);
+				e->port = port;
+				prueth_sw_fdb_spin_unlock(fdb);
+			}
+
+			/* mac and port are the same, touch the fdb */
+			e->age = 0;
 			return -1;
 		}
 	}
@@ -2375,7 +2390,8 @@ static int prueth_sw_insert_fdb_entry(struct prueth_emac *emac,
 		bucket_info->bucket_idx = mac_tbl_idx;
 	}
 
-	ret = prueth_sw_fdb_find_bucket_insert_point(mt, bucket_info, mac);
+	ret = prueth_sw_fdb_find_bucket_insert_point(fdb, bucket_info, mac,
+						     emac->port_id - 1);
 
 	if (ret < 0)
 		/* mac is already in fdb table */
