@@ -2077,6 +2077,21 @@ struct prueth_sw_fdb_work {
 	int event;
 };
 
+static void prueth_sw_fdb_spin_lock(struct fdb_tbl *fdb_tbl)
+{
+	/* Take the host lock */
+	writeb(1, &fdb_tbl->locks->host_lock);
+
+	/* Wait for the PRUs to release their locks */
+	while (readb(&fdb_tbl->locks->pru_locks))
+		;
+}
+
+static inline void prueth_sw_fdb_spin_unlock(struct fdb_tbl *fdb_tbl)
+{
+	writeb(0, &fdb_tbl->locks->host_lock);
+}
+
 static void mac_copy(u8 *dst, const u8 *src)
 {
 	u8 i;
@@ -2163,21 +2178,6 @@ prueth_sw_fdb_find_bucket_insert_point(struct fdb_mac_tbl_array_t *mac_tbl,
 	}
 
 	return mac_tbl_idx;
-}
-
-static void prueth_sw_fdb_spin_lock(struct fdb_tbl *fdb_tbl)
-{
-	/* Take the host lock */
-	writeb(1, &fdb_tbl->locks->host_lock);
-
-	/* Wait for the PRUs to release their locks */
-	while (readb(&fdb_tbl->locks->pru_locks))
-		;
-}
-
-static inline void prueth_sw_fdb_spin_unlock(struct fdb_tbl *fdb_tbl)
-{
-	writeb(0, &fdb_tbl->locks->host_lock);
 }
 
 static s16
