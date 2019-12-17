@@ -2362,7 +2362,6 @@ static int prueth_sw_insert_fdb_entry(struct prueth_emac *emac,
 	struct prueth *prueth = emac->prueth;
 	struct prueth_emac *other_emac;
 	struct fdb_tbl *fdb = prueth->fdb_tbl;
-	struct fdb_mac_tbl_array_t *mt = fdb->mac_tbl_a;
 	struct fdb_index_tbl_entry_t *bucket_info;
 	struct fdb_mac_tbl_entry_t *mac_info;
 	u8 hash_val, mac_tbl_idx;
