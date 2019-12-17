@@ -231,6 +231,17 @@ void prueth_set_reg(struct prueth *prueth, enum prueth_mem region,
 }
 
 static inline
+u8 prueth_sw_port_get_stp_state(struct prueth *prueth, enum prueth_port port)
+{
+	struct fdb_tbl *t = prueth->fdb_tbl;
+	u8 state;
+
+	state = readb(port - 1 ?
+		      &t->port2_stp_cfg->state : &t->port1_stp_cfg->state);
+	return state;
+}
+
+static inline
 void prueth_sw_port_set_stp_state(struct prueth *prueth,
 				  enum prueth_port port, u8 state)
 {
@@ -2447,6 +2458,29 @@ static int prueth_sw_delete_fdb_entry(struct prueth_emac *emac,
 	return 0;
 }
 
+static int prueth_sw_do_purge_fdb(struct prueth_emac *emac)
+{
+	struct prueth *prueth = emac->prueth;
+	struct fdb_tbl *fdb = prueth->fdb_tbl;
+	s16 i;
+
+	if (fdb->total_entries == 0)
+		return 0;
+
+	prueth_sw_fdb_spin_lock(fdb);
+
+	for (i = 0; i < FDB_INDEX_TBL_MAX_ENTRIES; i++)
+		fdb->index_a->index_tbl_entry[i].bucket_entries = 0;
+
+	for (i = 0; i < FDB_MAC_TBL_MAX_ENTRIES; i++)
+		fdb->mac_tbl_a->mac_tbl_entry[i].active = 0;
+
+	fdb->total_entries = 0;
+
+	prueth_sw_fdb_spin_unlock(fdb);
+	return 0;
+}
+
 static void prueth_sw_fdb_work(struct work_struct *work)
 {
 	struct prueth_sw_fdb_work *fdb_work =
@@ -2457,6 +2491,9 @@ static void prueth_sw_fdb_work(struct work_struct *work)
 	switch (fdb_work->event) {
 	case FDB_LEARN:
 		prueth_sw_insert_fdb_entry(emac, fdb_work->addr, 0);
+		break;
+	case FDB_PURGE:
+		prueth_sw_do_purge_fdb(emac);
 		break;
 	default:
 		break;
@@ -2485,6 +2522,25 @@ static int prueth_sw_learn_fdb(struct prueth_emac *emac, u8 *src_mac)
 	queue_work(system_long_wq, &fdb_work->work);
 	return 0;
 }
+
+static int prueth_sw_purge_fdb(struct prueth_emac *emac)
+{
+	struct prueth_sw_fdb_work *fdb_work;
+
+	fdb_work = kzalloc(sizeof(*fdb_work), GFP_ATOMIC);
+	if (WARN_ON(!fdb_work))
+		return -ENOMEM;
+
+	INIT_WORK(&fdb_work->work, prueth_sw_fdb_work);
+
+	fdb_work->event = FDB_PURGE;
+	fdb_work->emac  = emac;
+
+	dev_hold(emac->ndev);
+	queue_work(system_long_wq, &fdb_work->work);
+	return 0;
+}
+
 static int emac_rx_packet(struct prueth_emac *emac, u16 *bd_rd_ptr,
 			  struct prueth_packet_info pkt_info,
 			  const struct prueth_queue_info *rxqueue)
@@ -5791,11 +5847,16 @@ static int prueth_switchdev_attr_set(struct net_device *ndev,
 	struct prueth_emac *emac = netdev_priv(ndev);
 	struct prueth *prueth = emac->prueth;
 	int err = 0;
+	u8 o_state;
 
 	switch (attr->id) {
 	case SWITCHDEV_ATTR_ID_PORT_STP_STATE:
+		o_state = prueth_sw_port_get_stp_state(prueth, emac->port_id);
 		prueth_sw_port_set_stp_state(prueth, emac->port_id,
 					     attr->u.stp_state);
+
+		if (o_state != attr->u.stp_state)
+			prueth_sw_purge_fdb(emac);
 
 		dev_dbg(prueth->dev, "attr set: stp state:%u port:%u\n",
 			attr->u.stp_state, emac->port_id);
