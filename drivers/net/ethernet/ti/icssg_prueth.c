@@ -472,25 +472,46 @@ static void prueth_xmit_free(struct prueth_tx_chn *tx_chn,
 	k3_knav_pool_free(tx_chn->desc_pool, first_desc);
 }
 
-static int emac_shutdown(struct net_device *ndev)
+static int emac_send_command(struct prueth_emac *emac, u32 cmd)
 {
-	struct prueth_emac *emac = netdev_priv(ndev);
 	struct device *dev = emac->prueth->dev;
+	u32 *epib, *data = emac->cmd_data, pkt_len = sizeof(emac->cmd_data);
 	dma_addr_t desc_dma, buf_dma;
 	struct prueth_tx_chn *tx_chn;
 	struct cppi5_host_desc_t *first_desc;
-	int ret;
-	u32 *epib;
-	u32 *data = emac->cmd_data;
-	u32 pkt_len = sizeof(emac->cmd_data);
+	int ret = 0, retry = 15;
+	unsigned long flags;
 	void **swdata;
 
-	data[0] = cpu_to_le32(0x81010000); /* shutdown command */
+	netdev_info(emac->ndev, "Sending cmd %x\n", cmd);
+again:
+	spin_lock_irqsave(&emac->cmd_lock, flags);
+	/* only one command at a time allowed to firmware */
+	if (emac->fw_cmd_in_progress) {
+		spin_unlock_irqrestore(&emac->cmd_lock, flags);
+		/* Typically firmware command response come in less than 20
+		 * msec. But to be safe, wait for about 150 msec.
+		 */
+		mdelay(10);
+		if (retry--) {
+			goto again;
+		} else {
+			netdev_err(emac->ndev,
+				   "max retry reached, no cmd lock\n");
+			return -EBUSY;
+		}
+	} else {
+		emac->fw_cmd_in_progress = true;
+		spin_unlock_irqrestore(&emac->cmd_lock, flags);
+	}
+
+	data[0] = cpu_to_le32(cmd);
 
 	/* Map the linear buffer */
 	buf_dma = dma_map_single(dev, data, pkt_len, DMA_TO_DEVICE);
 	if (dma_mapping_error(dev, buf_dma)) {
-		netdev_err(ndev, "shutdown: failed to map cmd buffer\n");
+		netdev_err(emac->ndev, "cmd %x: failed to map cmd buffer\n",
+			   cmd);
 		return -EINVAL;
 	}
 
@@ -498,7 +519,8 @@ static int emac_shutdown(struct net_device *ndev)
 
 	first_desc = k3_knav_pool_alloc(tx_chn->desc_pool);
 	if (!first_desc) {
-		netdev_err(ndev, "shutdown: failed to allocate descriptor\n");
+		netdev_err(emac->ndev,
+			   "cmd %x: failed to allocate descriptor\n", cmd);
 		dma_unmap_single(dev, buf_dma, pkt_len, DMA_TO_DEVICE);
 		return -ENOMEM;
 	}
@@ -517,18 +539,88 @@ static int emac_shutdown(struct net_device *ndev)
 	cppi5_hdesc_set_pktlen(first_desc, pkt_len);
 	desc_dma = k3_knav_pool_virt2dma(tx_chn->desc_pool, first_desc);
 
+	/* send command */
+	reinit_completion(&emac->cmd_complete);
 	ret = k3_nav_udmax_push_tx_chn(tx_chn->tx_chn, first_desc, desc_dma);
 	if (ret) {
-		netdev_err(ndev, "shutdown: push failed: %d\n", ret);
+		netdev_err(emac->ndev, "cmd %x: push failed: %d\n", cmd, ret);
 		goto free_desc;
 	}
 
-	return 0;
+	ret = wait_for_completion_timeout(&emac->cmd_complete,
+					  msecs_to_jiffies(100));
+	if (!ret)
+		netdev_err(emac->ndev, "command completion timeout\n");
 
+	spin_lock_irqsave(&emac->cmd_lock, flags);
+	emac->fw_cmd_in_progress = false;
+	spin_unlock_irqrestore(&emac->cmd_lock, flags);
+
+	return ret;
 free_desc:
 	prueth_xmit_free(tx_chn, dev, first_desc);
 
 	return ret;
+}
+
+static void emac_change_port_speed_duplex(struct prueth_emac *emac,
+					  bool full_duplex, int speed)
+{
+	u32 cmd = ICSSG_FW_PSTATE_SPEED_DUPLEX, rgmii_cfg;
+	struct prueth *prueth = emac->prueth;
+	int slice = prueth_emac_slice(emac), rgmii_speed;
+	bool rgmii_full_duplex;
+
+	rgmii_cfg = icssg_get_rgmii_cfg_speed_duplex_val(prueth->miig_rt,
+							 slice);
+
+	rgmii_full_duplex = (rgmii_cfg & RGMII_CFG_RGMII_FULLDUPLEX) >>
+					RGMII_CFG_RGMII_FULLDUPLEX_SHIFT;
+
+	if (rgmii_full_duplex != full_duplex) {
+		netdev_warn(emac->ndev,
+			    "RGMII Duplex bits doesn't match with Phy\n");
+		return;
+	}
+
+	rgmii_speed = rgmii_cfg >> 1;
+	switch (speed) {
+	case SPEED_1000:
+		if ((rgmii_speed & RGMII_CFG_RGMII_SPEED_MASK) !=
+				RGMII_CFG_RGMII_SPEED_1G)
+			goto speed_mismatch;
+		break;
+
+	case SPEED_100:
+		if ((rgmii_speed & RGMII_CFG_RGMII_SPEED_MASK) !=
+				RGMII_CFG_RGMII_SPEED_100M)
+			goto speed_mismatch;
+		break;
+
+	case SPEED_10:
+		if ((rgmii_speed & RGMII_CFG_RGMII_SPEED_MASK) !=
+				RGMII_CFG_RGMII_SPEED_10M)
+			goto speed_mismatch;
+		break;
+	default:
+		/* Do nothing */
+		return;
+	}
+
+	cmd |= (rgmii_cfg & RGMII_CFG_RGMII_SPEED_DUPLEX_MASK);
+	emac_send_command(emac, cmd);
+
+	return;
+
+speed_mismatch:
+	netdev_warn(emac->ndev, "RGMII Duplex bits doesn't match with Phy\n");
+}
+
+static int emac_shutdown(struct net_device *ndev)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+
+	return emac_send_command(emac, ICSSG_FW_SHUTDOWN_CMD);
 }
 
 /**
@@ -585,6 +677,7 @@ static int emac_ndo_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 
 	cppi5_hdesc_init(first_desc, CPPI5_INFO0_HDESC_EPIB_PRESENT,
 			 PRUETH_NAV_PS_DATA_SIZE);
+	cppi5_hdesc_set_pkttype(first_desc, 0);
 	epib = first_desc->epib;
 	epib[0] = 0;
 	epib[1] = 0;
@@ -897,8 +990,20 @@ static irqreturn_t prueth_rx_mgm_irq_thread(int irq, void *dev_id)
 		case PRUETH_RX_MGM_FLOW_RESPONSE:
 			/* Process command response */
 			rsp = le32_to_cpu(*(u32 *)skb->data);
-			if ((rsp & 0xffff0000) == 0x81010000)
-				complete(&emac->shutdown_complete);
+			if ((rsp & 0xffff0000) == ICSSG_FW_SHUTDOWN_CMD) {
+				netdev_info(emac->ndev,
+					    "F/w Shutdown cmd resp %x\n", rsp);
+				complete(&emac->cmd_complete);
+			} else if ((rsp & 0xffff0000) ==
+				ICSSG_FW_PSTATE_SPEED_DUPLEX) {
+				netdev_info(emac->ndev,
+					    "F/w Speed/Duplex cmd rsp %x\n",
+					    rsp);
+				complete(&emac->cmd_complete);
+			} else {
+				netdev_info(emac->ndev, "F/w cmd rsp %x\n",
+					    rsp);
+			}
 			break;
 		case PRUETH_RX_MGM_FLOW_TIMESTAMP:
 			prueth_tx_ts(emac, (void *)skb->data);
@@ -1033,8 +1138,6 @@ static void emac_adjust_link(struct net_device *ndev)
 	bool new_state = false;
 	unsigned long flags;
 
-	spin_lock_irqsave(&emac->lock, flags);
-
 	if (phydev->link) {
 		/* check the mode of operation - full/half duplex */
 		if (phydev->duplex != emac->duplex) {
@@ -1067,6 +1170,7 @@ static void emac_adjust_link(struct net_device *ndev)
 			if (phydev->duplex == DUPLEX_FULL)
 				full_duplex = true;
 
+			spin_lock_irqsave(&emac->lock, flags);
 			if (!full_duplex) {
 				void __iomem *va = prueth->shram.va +
 					slice * ICSSG_CONFIG_OFFSET_SLICE1;
@@ -1084,6 +1188,14 @@ static void emac_adjust_link(struct net_device *ndev)
 			/* update the Tx IPG based on 100M/1G speed */
 			icssg_update_mii_rt_cfg(prueth->mii_rt, emac->speed,
 						slice);
+			spin_unlock_irqrestore(&emac->lock, flags);
+
+			/* send command to firmware to change speed and duplex
+			 * setting.
+			 */
+			emac_change_port_speed_duplex(emac, full_duplex,
+						      emac->speed);
+
 		} else {
 			emac_set_default_mii_config(emac);
 		}
@@ -1100,7 +1212,6 @@ static void emac_adjust_link(struct net_device *ndev)
 		netif_tx_stop_all_queues(ndev);
 	}
 
-	spin_unlock_irqrestore(&emac->lock, flags);
 }
 
 static int emac_napi_rx_poll(struct napi_struct *napi_rx, int budget)
@@ -1176,7 +1287,7 @@ static int emac_ndo_open(struct net_device *ndev)
 
 	netif_carrier_off(ndev);
 
-	init_completion(&emac->shutdown_complete);
+	init_completion(&emac->cmd_complete);
 	ret = prueth_init_tx_chns(emac);
 	if (ret) {
 		dev_err(dev, "failed to init tx channel: %d\n", ret);
@@ -1226,6 +1337,8 @@ static int emac_ndo_open(struct net_device *ndev)
 		goto free_rx_mgm_irq;
 
 	emac_set_default_mii_config(emac);
+
+	phy_attached_info(emac->phydev);
 
 	/* start PHY */
 	phy_start(emac->phydev);
@@ -1320,12 +1433,7 @@ static int emac_ndo_stop(struct net_device *ndev)
 	icssg_class_disable(prueth->miig_rt, prueth_emac_slice(emac));
 
 	/* send shutdown command */
-	reinit_completion(&emac->shutdown_complete);
 	emac_shutdown(ndev);
-	ret = wait_for_completion_timeout(&emac->shutdown_complete,
-					  msecs_to_jiffies(100));
-	if (!ret)
-		netdev_err(ndev, "shutdown completion timeout\n");
 
 	/* tear down and disable UDMA channels */
 	reinit_completion(&emac->tdown_complete);
@@ -1580,6 +1688,7 @@ static int prueth_netdev_init(struct prueth *prueth,
 	emac->port_id = port;
 	emac->msg_enable = netif_msg_init(debug_level, PRUETH_EMAC_DEBUG);
 	spin_lock_init(&emac->lock);
+	spin_lock_init(&emac->cmd_lock);
 
 	emac->phy_node = of_parse_phandle(eth_node, "phy-handle", 0);
 	if (!emac->phy_node) {
