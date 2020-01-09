@@ -126,6 +126,7 @@ struct prueth_emac {
 	struct hwtstamp_config tstamp_config;
 	unsigned int rx_ts_enabled : 1;
 	unsigned int tx_ts_enabled : 1;
+	unsigned int in_band: 1;
 
 	/* DMA related */
 	struct prueth_tx_chn tx_chns;
