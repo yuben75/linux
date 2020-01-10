@@ -999,6 +999,16 @@ static void icssg_config_set(struct prueth *prueth, int slice)
 	memcpy_toio(va, &prueth->config[slice], sizeof(prueth->config[slice]));
 }
 
+static void icssg_config_half_duplex(struct prueth *prueth, int slice)
+{
+	void __iomem *va = prueth->shram.va +
+				slice * ICSSG_CONFIG_OFFSET_SLICE1;
+	struct icssg_config *config = (struct icssg_config *)va;
+	u32 val = get_random_int();
+
+	writel(val, &config->rand_seed);
+}
+
 static int prueth_emac_start(struct prueth *prueth, struct prueth_emac *emac)
 {
 	struct device *dev = prueth->dev;
@@ -1101,8 +1111,6 @@ static void emac_adjust_link(struct net_device *ndev)
 
 		/* f/w should support 10, 100 & 1000 */
 		emac->speed = SPEED_1000;
-
-		/* half duplex may not be supported by f/w */
 		emac->duplex = DUPLEX_FULL;
 	}
 
@@ -1119,6 +1127,9 @@ static void emac_adjust_link(struct net_device *ndev)
 
 			if (phydev->duplex == DUPLEX_FULL)
 				full_duplex = true;
+
+			if (!full_duplex && emac->half_duplex)
+				icssg_config_half_duplex(prueth, slice);
 
 			/* Set the RGMII cfg for gig en and full duplex */
 			if (emac->speed == SPEED_10 &&
@@ -1666,6 +1677,10 @@ static int prueth_netdev_init(struct prueth *prueth,
 		}
 	}
 
+	emac->half_duplex = false;
+	if (of_property_read_bool(eth_node, "enable-half-duplex"))
+		emac->half_duplex = true;
+
 	emac->phy_if = of_get_phy_mode(eth_node);
 	if (emac->phy_if < 0) {
 		dev_err(prueth->dev, "could not get phy-mode property\n");
@@ -1694,16 +1709,23 @@ static int prueth_netdev_init(struct prueth *prueth,
 	}
 
 	/* remove unsupported modes */
-	emac->phydev->supported &= ~(SUPPORTED_100baseT_Half |
-				     SUPPORTED_1000baseT_Half |
+	emac->phydev->supported &= ~(SUPPORTED_1000baseT_Half |
 				     SUPPORTED_Pause |
 				     SUPPORTED_Asym_Pause);
 
-	/* If in-band mode is not set, don't advertise 10M features */
-	if (!emac->in_band)
-		emac->phydev->supported &= ~(PHY_10BT_FEATURES);
-	else
-		emac->phydev->supported &= ~(SUPPORTED_10baseT_Half);
+	/* If in-band mode is not set, don't advertise 10M features.
+	 * Similary if half-duplex not set, disable that as well.
+	 */
+	if (emac->half_duplex) {
+		if (!emac->in_band)
+			emac->phydev->supported &= ~(PHY_10BT_FEATURES);
+	} else {
+		if (!emac->in_band)
+			emac->phydev->supported &= ~(PHY_10BT_FEATURES);
+		else
+			emac->phydev->supported &= ~(SUPPORTED_10baseT_Half);
+		emac->phydev->supported &= ~(SUPPORTED_100baseT_Half);
+	}
 
 	emac->phydev->advertising = emac->phydev->supported;
 
