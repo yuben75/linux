@@ -128,6 +128,7 @@
 		pruss2_emac0: ethernet-mii0 {
 			phy-handle = <&pruss2_eth0_phy>;
 			phy-mode = "rgmii-rxid";
+			managed = "in-band-status";
 			syscon-rgmii-delay = <&scm_conf 0x4120>;
 			iep = <&icssg2_iep0>;
 			/* Filled in by bootloader */
@@ -137,6 +138,7 @@
 		pruss2_emac1: ethernet-mii1 {
 			phy-handle = <&pruss2_eth1_phy>;
 			phy-mode = "rgmii-rxid";
+			managed = "in-band-status";
 			syscon-rgmii-delay = <&scm_conf 0x4124>;
 			iep = <&icssg2_iep1>;
 			/* Filled in by bootloader */
