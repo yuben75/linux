@@ -1079,6 +1079,27 @@ static void prueth_emac_stop(struct prueth_emac *emac)
 	rproc_shutdown(prueth->pru[slice]);
 }
 
+static void emac_set_default_mii_config(struct prueth_emac *emac)
+{
+	struct prueth *prueth = emac->prueth;
+	int slice = prueth_emac_slice(emac);
+
+	if (emac->in_band) {
+		/* 10M, full duplex */
+		icssg_rgmii_cfg_set_inband(prueth->miig_rt, slice);
+		icssg_update_rgmii_cfg(prueth->miig_rt, false, false, slice);
+		icssg_update_mii_rt_cfg(prueth->mii_rt, SPEED_10, slice);
+		emac->duplex = DUPLEX_HALF;
+		emac->speed = SPEED_10;
+	} else {
+		/* 1G, half duplex */
+		icssg_update_rgmii_cfg(prueth->miig_rt, true, true, slice);
+		icssg_update_mii_rt_cfg(prueth->mii_rt, SPEED_1000, slice);
+		emac->duplex = DUPLEX_FULL;
+		emac->speed = SPEED_1000;
+	}
+}
+
 /* called back by PHY layer if there is change in link state of hw port*/
 static void emac_adjust_link(struct net_device *ndev)
 {
@@ -1107,11 +1128,6 @@ static void emac_adjust_link(struct net_device *ndev)
 	} else if (emac->link) {
 		new_state = true;
 		emac->link = 0;
-		/* defaults for no link */
-
-		/* f/w should support 10, 100 & 1000 */
-		emac->speed = SPEED_1000;
-		emac->duplex = DUPLEX_FULL;
 	}
 
 	if (new_state) {
@@ -1132,23 +1148,18 @@ static void emac_adjust_link(struct net_device *ndev)
 				icssg_config_half_duplex(prueth, slice);
 
 			/* Set the RGMII cfg for gig en and full duplex */
-			if (emac->speed == SPEED_10 &&
-			    phy_interface_mode_is_rgmii(emac->phy_if) &&
+			if (phy_interface_mode_is_rgmii(emac->phy_if) &&
 			    emac->in_band)
 				icssg_rgmii_cfg_set_inband(prueth->miig_rt,
 							   slice);
-			else
-				icssg_update_rgmii_cfg(prueth->miig_rt, gig_en,
-						       full_duplex, slice);
+			icssg_update_rgmii_cfg(prueth->miig_rt, gig_en,
+					       full_duplex, slice);
 
 			/* update the Tx IPG based on 100M/1G speed */
 			icssg_update_mii_rt_cfg(prueth->mii_rt,
 						emac->speed, slice);
 		} else {
-			icssg_update_rgmii_cfg(prueth->miig_rt, true, true,
-					       slice);
-			icssg_update_mii_rt_cfg(prueth->mii_rt, emac->speed,
-						slice);
+			emac_set_default_mii_config(emac);
 		}
 		spin_unlock_irqrestore(&emac->lock, flags);
 
@@ -1293,6 +1304,8 @@ static int emac_ndo_open(struct net_device *ndev)
 	ret = prueth_emac_start(prueth, emac);
 	if (ret)
 		goto free_rx_mgm_irq;
+
+	emac_set_default_mii_config(emac);
 
 	/* Get attached phy details */
 	phy_attached_info(emac->phydev);
