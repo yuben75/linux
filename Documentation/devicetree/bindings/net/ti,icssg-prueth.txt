@@ -34,6 +34,10 @@ Required properties for children:
 
 Optional properties for children:
 - local-mac-address	: mac address for the port.
+- managed		: See ethernet.txt file in the same directory.
+			  Set to "in-band-status" if the PHY supports
+			  in-band status report to RGMII interface for
+			  10M. For 1G and 100M, "auto" is assumed.
 
 Example (k3-am654 base board, dual-emac):
 ========================================
