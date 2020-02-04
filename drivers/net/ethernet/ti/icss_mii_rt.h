@@ -109,6 +109,8 @@
 #define RGMII_CFG_SPEED_10M	0
 #define RGMII_CFG_SPEED_100M	1
 #define RGMII_CFG_SPEED_1G	2
+#define RGMII_CFG_INBAND_MII0	BIT(16)
+#define RGMII_CFG_INBAND_MII1	BIT(20)
 
 static inline void icssg_update_rgmii_cfg(struct regmap *miig_rt, bool gig_en,
 					  bool full_duplex, int mii)
@@ -180,11 +182,27 @@ static inline void icssg_update_mii_rt_cfg(struct regmap *mii_rt, int speed,
 	case SPEED_100:
 		val = MII_RT_TX_IPG_100M;
 		break;
+	case SPEED_10:
+		/* MII TX IPG register bits are not wide enough to set IPG
+		 * for 10M link speed in ICSSG of PG1 SoC.  So Firmware use
+		 * a hardcoded value for 10M link. TODO: Set this for PG2.
+		 */
+		return;
 	default:
 		/* Other links speeds not supported */
 		pr_err("Unsupported link speed\n");
 		return;
 	}
 	regmap_write(mii_rt, ipg_reg, val);
+}
+
+static inline void icssg_rgmii_cfg_set_inband(struct regmap *miig_rt, int mii)
+{
+	u32 inband_mask;
+
+	/* 10M operation uses inband status update from PHY to RGMII */
+	inband_mask = (mii == ICSS_MII0) ? RGMII_CFG_INBAND_MII0 :
+			RGMII_CFG_INBAND_MII1;
+	regmap_update_bits(miig_rt, RGMII_CFG_OFFSET, inband_mask, inband_mask);
 }
 #endif /* __NET_PRUSS_MII_RT_H__ */

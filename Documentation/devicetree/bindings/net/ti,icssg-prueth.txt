@@ -34,6 +34,15 @@ Required properties for children:
 
 Optional properties for children:
 - local-mac-address	: mac address for the port.
+- managed		: See ethernet.txt file in the same directory.
+			  Set to "in-band-status" if the PHY supports
+			  in-band status report to RGMII interface for
+			  10M. For 1G and 100M, "auto" is assumed.
+- enable-half-duplex	: Enable half duplex operation on ICSSG0 MII port 1.
+			  This requires board modification to route PHY,
+			  DP83867, GPIO output pin to ICSSG-0 GPIO pin,
+			  PRG0_PRU1_GPIO10, as input. Only ICSSG 0, MII
+			  port 1 can be used for this.
 
 Example (k3-am654 base board, dual-emac):
 ========================================

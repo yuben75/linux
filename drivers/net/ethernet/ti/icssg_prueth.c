@@ -557,10 +557,6 @@ static void emac_change_port_speed_duplex(struct prueth_emac *emac,
 	struct prueth *prueth = emac->prueth;
 	int slice = prueth_emac_slice(emac);
 
-	/* only 100M and 1G and full duplex supported for now */
-	if (!(full_duplex && (speed == SPEED_1000 || speed == SPEED_100)))
-		return;
-
 	val = icssg_rgmii_get_speed(prueth->miig_rt, slice);
 	/* firmware expects full duplex settings in bit 2-1 */
 	val <<= 1;
@@ -1003,6 +999,16 @@ static void icssg_config_set(struct prueth *prueth, int slice)
 	memcpy_toio(va, &prueth->config[slice], sizeof(prueth->config[slice]));
 }
 
+static void icssg_config_half_duplex(struct prueth *prueth, int slice)
+{
+	void __iomem *va = prueth->shram.va +
+				slice * ICSSG_CONFIG_OFFSET_SLICE1;
+	struct icssg_config *config = (struct icssg_config *)va;
+	u32 val = get_random_int();
+
+	writel(val, &config->rand_seed);
+}
+
 static int prueth_emac_start(struct prueth *prueth, struct prueth_emac *emac)
 {
 	struct device *dev = prueth->dev;
@@ -1073,6 +1079,27 @@ static void prueth_emac_stop(struct prueth_emac *emac)
 	rproc_shutdown(prueth->pru[slice]);
 }
 
+static void emac_set_default_mii_config(struct prueth_emac *emac)
+{
+	struct prueth *prueth = emac->prueth;
+	int slice = prueth_emac_slice(emac);
+
+	if (emac->in_band) {
+		/* 10M, full duplex */
+		icssg_rgmii_cfg_set_inband(prueth->miig_rt, slice);
+		icssg_update_rgmii_cfg(prueth->miig_rt, false, false, slice);
+		icssg_update_mii_rt_cfg(prueth->mii_rt, SPEED_10, slice);
+		emac->duplex = DUPLEX_HALF;
+		emac->speed = SPEED_10;
+	} else {
+		/* 1G, half duplex */
+		icssg_update_rgmii_cfg(prueth->miig_rt, true, true, slice);
+		icssg_update_mii_rt_cfg(prueth->mii_rt, SPEED_1000, slice);
+		emac->duplex = DUPLEX_FULL;
+		emac->speed = SPEED_1000;
+	}
+}
+
 /* called back by PHY layer if there is change in link state of hw port*/
 static void emac_adjust_link(struct net_device *ndev)
 {
@@ -1101,13 +1128,6 @@ static void emac_adjust_link(struct net_device *ndev)
 	} else if (emac->link) {
 		new_state = true;
 		emac->link = 0;
-		/* defaults for no link */
-
-		/* f/w should support 100 & 1000 */
-		emac->speed = SPEED_1000;
-
-		/* half duplex may not be supported by f/w */
-		emac->duplex = DUPLEX_FULL;
 	}
 
 	if (new_state) {
@@ -1124,17 +1144,22 @@ static void emac_adjust_link(struct net_device *ndev)
 			if (phydev->duplex == DUPLEX_FULL)
 				full_duplex = true;
 
+			if (!full_duplex && emac->half_duplex)
+				icssg_config_half_duplex(prueth, slice);
+
 			/* Set the RGMII cfg for gig en and full duplex */
+			if (phy_interface_mode_is_rgmii(emac->phy_if) &&
+			    emac->in_band)
+				icssg_rgmii_cfg_set_inband(prueth->miig_rt,
+							   slice);
 			icssg_update_rgmii_cfg(prueth->miig_rt, gig_en,
 					       full_duplex, slice);
+
 			/* update the Tx IPG based on 100M/1G speed */
-			icssg_update_mii_rt_cfg(prueth->mii_rt, emac->speed,
-						slice);
+			icssg_update_mii_rt_cfg(prueth->mii_rt,
+						emac->speed, slice);
 		} else {
-			icssg_update_rgmii_cfg(prueth->miig_rt, true, true,
-					       slice);
-			icssg_update_mii_rt_cfg(prueth->mii_rt, emac->speed,
-						slice);
+			emac_set_default_mii_config(emac);
 		}
 		spin_unlock_irqrestore(&emac->lock, flags);
 
@@ -1279,6 +1304,8 @@ static int emac_ndo_open(struct net_device *ndev)
 	ret = prueth_emac_start(prueth, emac);
 	if (ret)
 		goto free_rx_mgm_irq;
+
+	emac_set_default_mii_config(emac);
 
 	/* Get attached phy details */
 	phy_attached_info(emac->phydev);
@@ -1663,11 +1690,25 @@ static int prueth_netdev_init(struct prueth *prueth,
 		}
 	}
 
+	emac->half_duplex = false;
+	if (of_property_read_bool(eth_node, "enable-half-duplex"))
+		emac->half_duplex = true;
+
 	emac->phy_if = of_get_phy_mode(eth_node);
 	if (emac->phy_if < 0) {
 		dev_err(prueth->dev, "could not get phy-mode property\n");
 		ret = emac->phy_if;
 		goto free;
+	}
+
+	emac->in_band = false;
+	if (phy_interface_mode_is_rgmii(emac->phy_if)) {
+		const char *managed;
+
+		ret = of_property_read_string(eth_node, "managed", &managed);
+		/* Support 10M if managed = in-band-status in eth DT node */
+		if (ret >= 0 && managed && !strcmp(managed, "in-band-status"))
+			emac->in_band = true;
 	}
 
 	/* connect PHY */
@@ -1681,11 +1722,24 @@ static int prueth_netdev_init(struct prueth *prueth,
 	}
 
 	/* remove unsupported modes */
-	emac->phydev->supported &= ~(PHY_10BT_FEATURES |
-				     SUPPORTED_100baseT_Half |
-				     SUPPORTED_1000baseT_Half |
+	emac->phydev->supported &= ~(SUPPORTED_1000baseT_Half |
 				     SUPPORTED_Pause |
 				     SUPPORTED_Asym_Pause);
+
+	/* If in-band mode is not set, don't advertise 10M features.
+	 * Similary if half-duplex not set, disable that as well.
+	 */
+	if (emac->half_duplex) {
+		if (!emac->in_band)
+			emac->phydev->supported &= ~(PHY_10BT_FEATURES);
+	} else {
+		if (!emac->in_band)
+			emac->phydev->supported &= ~(PHY_10BT_FEATURES);
+		else
+			emac->phydev->supported &= ~(SUPPORTED_10baseT_Half);
+		emac->phydev->supported &= ~(SUPPORTED_100baseT_Half);
+	}
+
 	emac->phydev->advertising = emac->phydev->supported;
 
 	/* get mac address from DT and set private and netdev addr */
