@@ -100,17 +100,6 @@
 #define RGMII_CFG_FULL_DUPLEX_MII1	BIT(22)
 #define RGMII_CFG_RGMII0_INBAND	BIT(16)
 #define RGMII_CFG_RGMII1_INBAND	BIT(20)
-#define RGMII_CFG_RGMII_SPEED_DUPLEX_MASK	GENMASK(3, 1)
-/* Shift to get the speed & duplex settings to MII 0 position */
-#define RGMII_CFG_RGMII1_SPEED_DUPLEX_LINK_SHIFT	4
-#define RGMII_CFG_RGMII_FULLDUPLEX	BIT(3)
-
-/* Driver helpers */
-#define RGMII_CFG_RGMII_SPEED_MASK	GENMASK(1, 0)
-#define RGMII_CFG_RGMII_SPEED_10M	0
-#define RGMII_CFG_RGMII_SPEED_100M	1
-#define RGMII_CFG_RGMII_SPEED_1G	2
-#define RGMII_CFG_RGMII_FULLDUPLEX_SHIFT	3
 
 static inline void icssg_update_rgmii_cfg(struct regmap *miig_rt, int speed,
 					  bool full_duplex, int mii)
@@ -137,19 +126,6 @@ static inline void icssg_update_rgmii_cfg(struct regmap *miig_rt, int speed,
 	if (full_duplex)
 		val = full_duplex_mask;
 	regmap_update_bits(miig_rt, RGMII_CFG_OFFSET, full_duplex_mask, val);
-}
-
-static inline u32 icssg_get_rgmii_cfg_speed_duplex_val(struct regmap *miig_rt,
-						       int mii)
-{
-	u32 val;
-
-	regmap_read(miig_rt, RGMII_CFG_OFFSET, &val);
-	if (mii == ICSS_MII1)
-		val >>= RGMII_CFG_RGMII1_SPEED_DUPLEX_LINK_SHIFT;
-	val &= RGMII_CFG_RGMII_SPEED_DUPLEX_MASK;
-
-	return val;
 }
 
 static inline void icssg_update_mii_rt_cfg(struct regmap *mii_rt, int speed,
