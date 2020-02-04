@@ -26,10 +26,6 @@ struct icssg_config {
 	__le32 n_burst;		/* for debug */
 	__le32 rtu_status;	/* RTU status */
 	__le32 info;		/* reserved */
-	__le32 reserve;
-	__le32 rand_seed;	/* Used for the random number
-				 * generation at firmware
-				 */
 } __packed;
 
 #endif /* __NET_TI_ICSSG_CONFIG_H */
