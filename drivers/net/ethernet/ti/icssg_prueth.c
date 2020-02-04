@@ -472,23 +472,25 @@ static void prueth_xmit_free(struct prueth_tx_chn *tx_chn,
 	k3_knav_pool_free(tx_chn->desc_pool, first_desc);
 }
 
-static int emac_send_command(struct prueth_emac *emac, u32 cmd)
+static int emac_shutdown(struct net_device *ndev)
 {
+	struct prueth_emac *emac = netdev_priv(ndev);
 	struct device *dev = emac->prueth->dev;
-	u32 *epib, *data = emac->cmd_data, pkt_len = sizeof(emac->cmd_data);
 	dma_addr_t desc_dma, buf_dma;
 	struct prueth_tx_chn *tx_chn;
 	struct cppi5_host_desc_t *first_desc;
-	void **swdata;
 	int ret;
+	u32 *epib;
+	u32 *data = emac->cmd_data;
+	u32 pkt_len = sizeof(emac->cmd_data);
+	void **swdata;
 
-	data[0] = cpu_to_le32(cmd);
+	data[0] = cpu_to_le32(0x81010000); /* shutdown command */
 
 	/* Map the linear buffer */
 	buf_dma = dma_map_single(dev, data, pkt_len, DMA_TO_DEVICE);
 	if (dma_mapping_error(dev, buf_dma)) {
-		netdev_err(emac->ndev, "cmd %x: failed to map cmd buffer\n",
-			   cmd);
+		netdev_err(ndev, "shutdown: failed to map cmd buffer\n");
 		return -EINVAL;
 	}
 
@@ -496,8 +498,7 @@ static int emac_send_command(struct prueth_emac *emac, u32 cmd)
 
 	first_desc = k3_knav_pool_alloc(tx_chn->desc_pool);
 	if (!first_desc) {
-		netdev_err(emac->ndev,
-			   "cmd %x: failed to allocate descriptor\n", cmd);
+		netdev_err(ndev, "shutdown: failed to allocate descriptor\n");
 		dma_unmap_single(dev, buf_dma, pkt_len, DMA_TO_DEVICE);
 		return -ENOMEM;
 	}
@@ -518,22 +519,16 @@ static int emac_send_command(struct prueth_emac *emac, u32 cmd)
 
 	ret = k3_nav_udmax_push_tx_chn(tx_chn->tx_chn, first_desc, desc_dma);
 	if (ret) {
-		netdev_err(emac->ndev, "cmd %x: push failed: %d\n", cmd, ret);
+		netdev_err(ndev, "shutdown: push failed: %d\n", ret);
 		goto free_desc;
 	}
+
 	return 0;
 
 free_desc:
 	prueth_xmit_free(tx_chn, dev, first_desc);
 
 	return ret;
-}
-
-static int emac_shutdown(struct net_device *ndev)
-{
-	struct prueth_emac *emac = netdev_priv(ndev);
-
-	return emac_send_command(emac, ICSSG_FW_SHUTDOWN_CMD);
 }
 
 /**
@@ -903,7 +898,7 @@ static irqreturn_t prueth_rx_mgm_irq_thread(int irq, void *dev_id)
 		case PRUETH_RX_MGM_FLOW_RESPONSE:
 			/* Process command response */
 			rsp = le32_to_cpu(*(u32 *)skb->data);
-			if ((rsp & 0xffff0000) == ICSSG_FW_SHUTDOWN_CMD)
+			if ((rsp & 0xffff0000) == 0x81010000)
 				complete(&emac->shutdown_complete);
 			break;
 		case PRUETH_RX_MGM_FLOW_TIMESTAMP:

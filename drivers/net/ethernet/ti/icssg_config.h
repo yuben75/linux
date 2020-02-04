@@ -32,6 +32,4 @@ struct icssg_config {
 				 */
 } __packed;
 
-#define ICSSG_FW_SHUTDOWN_CMD		0x81010000
-
 #endif /* __NET_TI_ICSSG_CONFIG_H */
