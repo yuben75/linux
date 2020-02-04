@@ -125,7 +125,6 @@ struct prueth_emac {
 	struct hwtstamp_config tstamp_config;
 	unsigned int rx_ts_enabled : 1;
 	unsigned int tx_ts_enabled : 1;
-	unsigned int fw_cmd_in_progress: 1;
 
 	/* DMA related */
 	struct prueth_tx_chn tx_chns;
@@ -144,9 +143,7 @@ struct prueth_emac {
 
 	/* shutdown related */
 	u32 cmd_data[4];
-	struct completion cmd_complete;
-	/* spinlock to serialize access to firmware command interface */
-	spinlock_t cmd_lock;
+	struct completion shutdown_complete;
 };
 
 /**
