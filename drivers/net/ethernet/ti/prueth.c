@@ -52,6 +52,7 @@
 #include "prueth_dbgfs.h"
 #include "prueth_node_tbl.h"
 #include "prueth_fdb_tbl.h"
+#include "icss_vlan_mcast_filter_mmap.h"
 
 #define PRUETH_MODULE_VERSION "0.2"
 #define PRUETH_MODULE_DESCRIPTION "PRUSS Ethernet driver"
@@ -4047,65 +4048,6 @@ static int emac_ndo_open(struct net_device *ndev)
 		return -EINVAL;
 	}
 
-	if ((PRUETH_HAS_RED(prueth) && !prueth->emac_configured) &&
-	    prueth->priority_ts) {
-		lp_int = emac->rx_lp_irq;
-		hp_int = emac->rx_hp_irq;
-		prueth->hp->ndev = red_emac->ndev;
-		prueth->hp->priority = 0;
-		prueth->lp->ndev = red_emac->ndev;
-		prueth->lp->priority = 1;
-
-		ret = request_threaded_irq(hp_int, NULL, red_emac_rx_thread,
-					   flags, hp_int_name, prueth->hp);
-		ret = request_threaded_irq(lp_int, NULL, red_emac_rx_thread,
-					   flags, lp_int_name, prueth->lp);
-	}
-
-	if (PRUETH_IS_EMAC(prueth) || PRUETH_IS_SWITCH(prueth) ||
-	    (PRUETH_HAS_RED(prueth) && !prueth->priority_ts))
-		ret = request_threaded_irq(emac->rx_irq, NULL, emac_rx_thread,
-					   flags, ndev->name, ndev);
-
-	if (ret) {
-		netdev_err(ndev, "unable to request RX IRQ\n");
-		return ret;
-	}
-
-	/* Currently switch firmware doesn't implement tx irq. So make it
-	 * conditional to non switch case
-	 */
-	if (!PRUETH_HAS_SWITCH(prueth)) {
-		ret = request_irq(emac->tx_irq, emac_tx_hardirq,
-				  flags, ndev->name, ndev);
-		if (ret) {
-			netdev_err(ndev, "unable to request TX IRQ\n");
-			goto free_rx_irq;
-		}
-	}
-
-	if (PRUETH_HAS_PTP(prueth) && PRUETH_HAS_RED(prueth) &&
-	    emac->hsrprp_ptp_tx_irq > 0) {
-		ret = request_irq(emac->hsrprp_ptp_tx_irq,
-				  emac_tx_hardirq_ptp, flags,
-				  ndev->name, ndev);
-		if (ret) {
-			netdev_err(ndev, "unable to request HSRPRP PTP TX IRQ\n");
-			goto free_irq;
-		}
-	}
-
-	if (PRUETH_HAS_PTP(prueth) && PRUETH_IS_EMAC(prueth) &&
-	    emac->emac_ptp_tx_irq > 0) {
-		ret = request_irq(emac->emac_ptp_tx_irq,
-				  emac_tx_hardirq_ptp, flags,
-				  ndev->name, ndev);
-		if (ret) {
-			netdev_err(ndev, "unable to request EMAC PTP TX IRQ\n");
-			goto free_hsrprp_ptp_irq;
-		}
-	}
-
 	/* set h/w MAC as user might have re-configured */
 	ether_addr_copy(emac->mac_addr, ndev->dev_addr);
 
@@ -4139,7 +4081,7 @@ static int emac_ndo_open(struct net_device *ndev)
 
 		if (ret) {
 			dev_err(&ndev->dev, "hostinit failed: %d\n", ret);
-			goto free_ptp_irq;
+			return ret;
 		}
 
 		if (PRUETH_HAS_RED(prueth)) {
@@ -4149,14 +4091,14 @@ static int emac_ndo_open(struct net_device *ndev)
 					     GFP_KERNEL);
 			if (!prueth->mac_queue || !prueth->nt) {
 				ret = -ENOMEM;
-				goto free_ptp_irq;
+				return ret;
 			}
 		}
 
 		if (PRUETH_HAS_RED(prueth)) {
 			ret = prueth_hsr_prp_debugfs_init(prueth);
 			if (ret)
-				goto free_ptp_irq;
+				return ret;
 		}
 
 		if (PRUETH_IS_SWITCH(prueth)) {
@@ -4285,6 +4227,65 @@ static int emac_ndo_open(struct net_device *ndev)
 	if (ret)
 		goto clean_debugfs_emac;
 
+	if ((PRUETH_HAS_RED(prueth) && !prueth->emac_configured) &&
+	    prueth->priority_ts) {
+		lp_int = emac->rx_lp_irq;
+		hp_int = emac->rx_hp_irq;
+		prueth->hp->ndev = red_emac->ndev;
+		prueth->hp->priority = 0;
+		prueth->lp->ndev = red_emac->ndev;
+		prueth->lp->priority = 1;
+
+		ret = request_threaded_irq(hp_int, NULL, red_emac_rx_thread,
+					   flags, hp_int_name, prueth->hp);
+		ret = request_threaded_irq(lp_int, NULL, red_emac_rx_thread,
+					   flags, lp_int_name, prueth->lp);
+	}
+
+	if (PRUETH_IS_EMAC(prueth) || PRUETH_IS_SWITCH(prueth) ||
+	    (PRUETH_HAS_RED(prueth) && !prueth->priority_ts))
+		ret = request_threaded_irq(emac->rx_irq, NULL, emac_rx_thread,
+					   flags, ndev->name, ndev);
+
+	if (ret) {
+		netdev_err(ndev, "unable to request RX IRQ\n");
+		goto rproc_shutdown;
+	}
+
+	/* Currently switch firmware doesn't implement tx irq. So make it
+	 * conditional to non switch case
+	 */
+	if (!PRUETH_HAS_SWITCH(prueth)) {
+		ret = request_irq(emac->tx_irq, emac_tx_hardirq,
+				  flags, ndev->name, ndev);
+		if (ret) {
+			netdev_err(ndev, "unable to request TX IRQ\n");
+			goto free_rx_irq;
+		}
+	}
+
+	if (PRUETH_HAS_PTP(prueth) && PRUETH_HAS_RED(prueth) &&
+	    emac->hsrprp_ptp_tx_irq > 0) {
+		ret = request_irq(emac->hsrprp_ptp_tx_irq,
+				  emac_tx_hardirq_ptp, flags,
+				  ndev->name, ndev);
+		if (ret) {
+			netdev_err(ndev, "unable to request HSRPRP PTP TX IRQ\n");
+			goto free_irq;
+		}
+	}
+
+	if (PRUETH_HAS_PTP(prueth) && PRUETH_IS_EMAC(prueth) &&
+	    emac->emac_ptp_tx_irq > 0) {
+		ret = request_irq(emac->emac_ptp_tx_irq,
+				  emac_tx_hardirq_ptp, flags,
+				  ndev->name, ndev);
+		if (ret) {
+			netdev_err(ndev, "unable to request EMAC PTP TX IRQ\n");
+			goto free_hsrprp_ptp_irq;
+		}
+	}
+
 	/* initialized Network Storm Prevention timer count */
 	emac->nsp_timer_count = PRUETH_DEFAULT_NSP_TIMER_COUNT;
 	prueth_start_timer(prueth);
@@ -4329,24 +4330,6 @@ static int emac_ndo_open(struct net_device *ndev)
 
 	return 0;
 
-clean_debugfs_emac:
-	prueth_debugfs_term(emac);
-clean_debugfs_sw:
-	if (PRUETH_IS_SWITCH(prueth))
-		prueth_sw_debugfs_term(prueth);
-clean_sw_fdb:
-	if (PRUETH_IS_SWITCH(prueth)) {
-		kfree(prueth->fdb_tbl);
-		prueth->fdb_tbl = NULL;
-	}
-clean_debugfs_hsr_prp:
-	if (PRUETH_HAS_RED(prueth))
-		prueth_hsr_prp_debugfs_term(prueth);
-free_ptp_irq:
-	mutex_unlock(&prueth->mlock);
-	if (PRUETH_HAS_PTP(prueth) && PRUETH_IS_EMAC(prueth) &&
-	    emac->emac_ptp_tx_irq > 0)
-		free_irq(emac->emac_ptp_tx_irq, ndev);
 free_hsrprp_ptp_irq:
 	if (PRUETH_HAS_PTP(prueth) && PRUETH_HAS_RED(prueth) &&
 	    emac->hsrprp_ptp_tx_irq > 0)
@@ -4363,6 +4346,29 @@ free_rx_irq:
 	} else {
 		free_irq(emac->rx_irq, ndev);
 	}
+rproc_shutdown:
+	if (PRUETH_HAS_SWITCH(prueth)) {
+		rproc_shutdown(prueth->pru0);
+		rproc_shutdown(prueth->pru1);
+	} else {
+		if (emac->port_id == PRUETH_PORT_MII0)
+			rproc_shutdown(prueth->pru0);
+		else
+			rproc_shutdown(prueth->pru1);
+	}
+clean_debugfs_emac:
+	prueth_debugfs_term(emac);
+clean_debugfs_sw:
+	if (PRUETH_IS_SWITCH(prueth))
+		prueth_sw_debugfs_term(prueth);
+clean_sw_fdb:
+	if (PRUETH_IS_SWITCH(prueth)) {
+		kfree(prueth->fdb_tbl);
+		prueth->fdb_tbl = NULL;
+	}
+clean_debugfs_hsr_prp:
+	if (PRUETH_HAS_RED(prueth))
+		prueth_hsr_prp_debugfs_term(prueth);
 
 	return ret;
 }
@@ -4768,7 +4774,60 @@ static struct net_device_stats *emac_ndo_get_stats(struct net_device *ndev)
 	return stats;
 }
 
-static u8 get_hash_with_mask(u8 *mac, u8 *mask)
+/* enable/disable MC filter */
+static void emac_mc_filter_ctrl(struct prueth_emac *emac, bool enable)
+{
+	struct prueth *prueth = emac->prueth;
+	void __iomem *mc_filter_ctrl;
+	u32 reg;
+
+	mc_filter_ctrl = prueth->mem[emac->dram].va +
+			 ICSS_EMAC_FW_MULTICAST_FILTER_CTRL_OFFSET;
+
+	if (enable)
+		reg = ICSS_EMAC_FW_MULTICAST_FILTER_CTRL_ENABLED;
+	else
+		reg = ICSS_EMAC_FW_MULTICAST_FILTER_CTRL_DISABLED;
+
+	writeb(reg, mc_filter_ctrl);
+}
+
+/* reset MC filter bins */
+static void emac_mc_filter_reset(struct prueth_emac *emac)
+{
+	struct prueth *prueth = emac->prueth;
+	void __iomem *mc_filter_tbl;
+
+	mc_filter_tbl = prueth->mem[emac->dram].va +
+			 ICSS_EMAC_FW_MULTICAST_FILTER_TABLE;
+	memset_io(mc_filter_tbl, 0, ICSS_EMAC_FW_MULTICAST_TABLE_SIZE_BYTES);
+}
+
+/* set MC filter hashmask */
+static void emac_mc_filter_hashmask(struct prueth_emac *emac,
+				    u8 mask[ICSS_EMAC_FW_MULTICAST_FILTER_MASK_SIZE_BYTES])
+{
+	struct prueth *prueth = emac->prueth;
+	void __iomem *mc_filter_mask;
+
+	mc_filter_mask = prueth->mem[emac->dram].va +
+			 ICSS_EMAC_FW_MULTICAST_FILTER_MASK_OFFSET;
+	memcpy_toio(mc_filter_mask, mask,
+		    ICSS_EMAC_FW_MULTICAST_FILTER_MASK_SIZE_BYTES);
+}
+
+static void emac_mc_filter_bin_allow(struct prueth_emac *emac, u8 hash)
+{
+	struct prueth *prueth = emac->prueth;
+	void __iomem *mc_filter_tbl;
+
+	mc_filter_tbl = prueth->mem[emac->dram].va +
+			 ICSS_EMAC_FW_MULTICAST_FILTER_TABLE;
+	writeb(ICSS_EMAC_FW_MULTICAST_FILTER_HOST_RCV_ALLOWED,
+	       mc_filter_tbl + hash);
+}
+
+static u8 emac_get_mc_hash(u8 *mac, u8 *mask)
 {
 	int j;
 	u8 hash;
@@ -4818,7 +4877,7 @@ static void prueth_set_rx_mode(struct prueth_emac *emac)
 		return;
 
 	netdev_for_each_mc_addr(ha, ndev) {
-		hash = get_hash_with_mask(ha->addr, emac->mc_mac_mask);
+		hash = emac_get_mc_hash(ha->addr, emac->mc_mac_mask);
 		writeb(MULTICAST_FILTER_HOST_RCV_ALLOWED,
 		       ram + mc_filter_tbl + hash);
 	}
@@ -4837,9 +4896,10 @@ static void emac_ndo_set_rx_mode(struct net_device *ndev)
 	struct prueth *prueth = emac->prueth;
 	struct prueth_mmap_sram_cfg *s = &prueth->mmap_sram_cfg;
 	void __iomem *sram = prueth->mem[PRUETH_MEM_SHARED_RAM].va;
-	void __iomem *ram = emac->prueth->mem[emac->dram].va;
-	u32 mc_ctrl_byte = prueth->fw_offsets->mc_ctrl_byte;
 	u32 reg, mask;
+	bool promisc = ndev->flags & IFF_PROMISC;
+	struct netdev_hw_addr *ha;
+	u8 hash;
 
 	if (PRUETH_HAS_RED(prueth))
 		return prueth_set_rx_mode(emac);
@@ -4864,19 +4924,36 @@ static void emac_ndo_set_rx_mode(struct net_device *ndev)
 		return;
 	}
 
-	if (ndev->flags & IFF_PROMISC) {
+	/* Disable and reset multicast filter, allows allmulti */
+	emac_mc_filter_ctrl(emac, false);
+	emac_mc_filter_reset(emac);
+	emac_mc_filter_hashmask(emac, emac->mc_mac_mask);
+
+	if (promisc) {
 		/* Enable promiscuous mode */
 		reg |= mask;
-		/* Disable MC filtering when promiscuous mode enabled */
-		writeb(MULTICAST_FILTER_DISABLED, ram + mc_ctrl_byte);
 	} else {
 		/* Disable promiscuous mode */
 		reg &= ~mask;
-		/* Enable MC filtering when promiscuous mode disabled */
-		prueth_set_rx_mode(emac);
 	}
 
 	writel(reg, sram + s->eof_48k_buffer_bd + EMAC_PROMISCUOUS_MODE_OFFSET);
+
+	if (promisc)
+		return;
+
+	if (ndev->flags & IFF_ALLMULTI)
+		return;
+
+	emac_mc_filter_ctrl(emac, true);	/* all multicast blocked */
+
+	if (netdev_mc_empty(ndev))
+		return;
+
+	netdev_for_each_mc_addr(ha, ndev) {
+		hash = emac_get_mc_hash(ha->addr, emac->mc_mac_mask);
+		emac_mc_filter_bin_allow(emac, hash);
+	}
 }
 
 static int emac_hwtstamp_set(struct net_device *ndev, struct ifreq *ifr)
