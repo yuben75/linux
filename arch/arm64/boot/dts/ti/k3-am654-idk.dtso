@@ -62,6 +62,7 @@
 			pruss0_emac0: ethernet-mii0 {
 				phy-handle = <&pruss0_eth0_phy>;
 				phy-mode = "rgmii-rxid";
+				managed = "in-band-status";
 				syscon-rgmii-delay = <&scm_conf 0x4100>;
 				iep = <&icssg0_iep0>;
 				/* Filled in by bootloader */
@@ -71,6 +72,7 @@
 			pruss0_emac1: ethernet-mii1 {
 				phy-handle = <&pruss0_eth1_phy>;
 				phy-mode = "rgmii-rxid";
+				managed = "in-band-status";
 				syscon-rgmii-delay = <&scm_conf 0x4104>;
 				iep = <&icssg0_iep1>;
 				/* Filled in by bootloader */
@@ -115,6 +117,7 @@
 			pruss1_emac0: ethernet-mii0 {
 				phy-handle = <&pruss1_eth0_phy>;
 				phy-mode = "rgmii-rxid";
+				managed = "in-band-status";
 				syscon-rgmii-delay = <&scm_conf 0x4110>;
 				iep = <&icssg1_iep0>;
 				/* Filled in by bootloader */
@@ -124,6 +127,7 @@
 			pruss1_emac1: ethernet-mii1 {
 				phy-handle = <&pruss1_eth1_phy>;
 				phy-mode = "rgmii-rxid";
+				managed = "in-band-status";
 				syscon-rgmii-delay = <&scm_conf 0x4114>;
 				iep = <&icssg1_iep1>;
 				/* Filled in by bootloader */
@@ -179,7 +183,6 @@
 			AM65X_IOPAD(0x0220, PIN_OUTPUT, 2) /* (AB25) PRG0_PRU0_GPO11.PRG0_RGMII1_TX_CTL */
 			AM65X_IOPAD(0x020c, PIN_INPUT, 2) /* (Y25) PRG0_PRU0_GPO6.PRG0_RGMII1_RXC */
 			AM65X_IOPAD(0x0204, PIN_INPUT, 2) /* (Y24) PRG0_PRU0_GPO4.PRG0_RGMII1_RX_CTL */
-			AM65X_IOPAD(0x026c, PIN_INPUT, 1) /* (AA28) PRG0_PRU1_GPO10.PRG0_PRU1_GPI10 */
 		>;
 	};
 

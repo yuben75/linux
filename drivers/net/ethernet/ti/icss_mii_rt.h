@@ -98,58 +98,74 @@
 #define RGMII_CFG_GIG_EN_MII1	BIT(21)
 #define RGMII_CFG_FULL_DUPLEX_MII0	BIT(18)
 #define RGMII_CFG_FULL_DUPLEX_MII1	BIT(22)
-#define RGMII_CFG_RGMII0_INBAND	BIT(16)
-#define RGMII_CFG_RGMII1_INBAND	BIT(20)
-#define RGMII_CFG_RGMII_SPEED_DUPLEX_MASK	GENMASK(3, 1)
-/* Shift to get the speed & duplex settings to MII 0 position */
-#define RGMII_CFG_RGMII1_SPEED_DUPLEX_LINK_SHIFT	4
-#define RGMII_CFG_RGMII_FULLDUPLEX	BIT(3)
+#define RGMII_CFG_SPEED_MII0	GENMASK(2, 1)
+#define RGMII_CFG_SPEED_MII1	GENMASK(6, 5)
+#define RGMII_CFG_SPEED_MII0_SHIFT	1
+#define RGMII_CFG_SPEED_MII1_SHIFT	5
+#define RGMII_CFG_FULLDUPLEX_MII0	BIT(3)
+#define RGMII_CFG_FULLDUPLEX_MII1	BIT(7)
+#define RGMII_CFG_FULLDUPLEX_MII0_SHIFT	3
+#define RGMII_CFG_FULLDUPLEX_MII1_SHIFT	7
+#define RGMII_CFG_SPEED_10M	0
+#define RGMII_CFG_SPEED_100M	1
+#define RGMII_CFG_SPEED_1G	2
+#define RGMII_CFG_INBAND_MII0	BIT(16)
+#define RGMII_CFG_INBAND_MII1	BIT(20)
 
-/* Driver helpers */
-#define RGMII_CFG_RGMII_SPEED_MASK	GENMASK(1, 0)
-#define RGMII_CFG_RGMII_SPEED_10M	0
-#define RGMII_CFG_RGMII_SPEED_100M	1
-#define RGMII_CFG_RGMII_SPEED_1G	2
-#define RGMII_CFG_RGMII_FULLDUPLEX_SHIFT	3
-
-static inline void icssg_update_rgmii_cfg(struct regmap *miig_rt, int speed,
+static inline void icssg_update_rgmii_cfg(struct regmap *miig_rt, bool gig_en,
 					  bool full_duplex, int mii)
 {
-	u32 gig_en_mask, val = 0, full_duplex_mask, inband;
+	u32 gig_en_mask, gig_val = 0, full_duplex_mask, full_duplex_val = 0;
 
 	gig_en_mask = (mii == ICSS_MII0) ? RGMII_CFG_GIG_EN_MII0 :
 					RGMII_CFG_GIG_EN_MII1;
-	inband = (mii == ICSS_MII0) ? RGMII_CFG_RGMII0_INBAND :
-					RGMII_CFG_RGMII1_INBAND;
-	if (speed == SPEED_1000)
-		val = gig_en_mask;
-
-	regmap_update_bits(miig_rt, RGMII_CFG_OFFSET, gig_en_mask, val);
-
-	val = 0;
-	if (speed != SPEED_1000)
-		val = inband;
-	regmap_update_bits(miig_rt, RGMII_CFG_OFFSET, inband, val);
+	if (gig_en)
+		gig_val = gig_en_mask;
+	regmap_update_bits(miig_rt, RGMII_CFG_OFFSET, gig_en_mask, gig_val);
 
 	full_duplex_mask = (mii == ICSS_MII0) ? RGMII_CFG_FULL_DUPLEX_MII0 :
 					   RGMII_CFG_FULL_DUPLEX_MII1;
-	val = 0;
 	if (full_duplex)
-		val = full_duplex_mask;
-	regmap_update_bits(miig_rt, RGMII_CFG_OFFSET, full_duplex_mask, val);
+		full_duplex_val = full_duplex_mask;
+	regmap_update_bits(miig_rt, RGMII_CFG_OFFSET, full_duplex_mask,
+			   full_duplex_val);
 }
 
-static inline u32 icssg_get_rgmii_cfg_speed_duplex_val(struct regmap *miig_rt,
-						       int mii)
+static inline u32 icssg_rgmii_cfg_get_bitfield(struct regmap *miig_rt,
+					       u32 mask, u32 shift)
 {
 	u32 val;
 
 	regmap_read(miig_rt, RGMII_CFG_OFFSET, &val);
-	if (mii == ICSS_MII1)
-		val >>= RGMII_CFG_RGMII1_SPEED_DUPLEX_LINK_SHIFT;
-	val &= RGMII_CFG_RGMII_SPEED_DUPLEX_MASK;
+	val &= mask;
+	val >>= shift;
 
 	return val;
+}
+
+static inline u32 icssg_rgmii_get_speed(struct regmap *miig_rt, int mii)
+{
+	u32 shift = RGMII_CFG_SPEED_MII0_SHIFT, mask = RGMII_CFG_SPEED_MII0;
+
+	if (mii == ICSS_MII1) {
+		shift = RGMII_CFG_SPEED_MII1_SHIFT;
+		mask = RGMII_CFG_SPEED_MII1;
+	}
+
+	return icssg_rgmii_cfg_get_bitfield(miig_rt, mask, shift);
+}
+
+static inline u32 icssg_rgmii_get_fullduplex(struct regmap *miig_rt, int mii)
+{
+	u32 shift = RGMII_CFG_FULLDUPLEX_MII0_SHIFT;
+	u32 mask = RGMII_CFG_FULLDUPLEX_MII0;
+
+	if (mii == ICSS_MII1) {
+		shift = RGMII_CFG_FULLDUPLEX_MII1_SHIFT;
+		mask = RGMII_CFG_FULLDUPLEX_MII1;
+	}
+
+	return icssg_rgmii_cfg_get_bitfield(miig_rt, mask, shift);
 }
 
 static inline void icssg_update_mii_rt_cfg(struct regmap *mii_rt, int speed,
@@ -167,14 +183,26 @@ static inline void icssg_update_mii_rt_cfg(struct regmap *mii_rt, int speed,
 		val = MII_RT_TX_IPG_100M;
 		break;
 	case SPEED_10:
-		/* IPG is not available for this speed in this version of
-		 * ICSSG. Firmware use a hardcoded value for 10M link
+		/* MII TX IPG register bits are not wide enough to set IPG
+		 * for 10M link speed in ICSSG of PG1 SoC.  So Firmware use
+		 * a hardcoded value for 10M link. TODO: Set this for PG2.
 		 */
 		return;
 	default:
+		/* Other links speeds not supported */
 		pr_err("Unsupported link speed\n");
 		return;
 	}
 	regmap_write(mii_rt, ipg_reg, val);
+}
+
+static inline void icssg_rgmii_cfg_set_inband(struct regmap *miig_rt, int mii)
+{
+	u32 inband_mask;
+
+	/* 10M operation uses inband status update from PHY to RGMII */
+	inband_mask = (mii == ICSS_MII0) ? RGMII_CFG_INBAND_MII0 :
+			RGMII_CFG_INBAND_MII1;
+	regmap_update_bits(miig_rt, RGMII_CFG_OFFSET, inband_mask, inband_mask);
 }
 #endif /* __NET_PRUSS_MII_RT_H__ */

@@ -472,39 +472,25 @@ static void prueth_xmit_free(struct prueth_tx_chn *tx_chn,
 	k3_knav_pool_free(tx_chn->desc_pool, first_desc);
 }
 
+/* TODO: Convert this to use worker/workqueue mechanism to serialize the
+ * request to firmware
+ */
 static int emac_send_command(struct prueth_emac *emac, u32 cmd)
 {
 	struct device *dev = emac->prueth->dev;
-	u32 *epib, *data = emac->cmd_data, pkt_len = sizeof(emac->cmd_data);
 	dma_addr_t desc_dma, buf_dma;
 	struct prueth_tx_chn *tx_chn;
 	struct cppi5_host_desc_t *first_desc;
-	int ret = 0, retry = 15;
-	unsigned long flags;
+	int ret = 0;
+	u32 *epib;
+	u32 *data = emac->cmd_data;
+	u32 pkt_len = sizeof(emac->cmd_data);
 	void **swdata;
 
-	netdev_info(emac->ndev, "Sending cmd %x\n", cmd);
-again:
-	spin_lock_irqsave(&emac->cmd_lock, flags);
-	/* only one command at a time allowed to firmware */
-	if (emac->fw_cmd_in_progress) {
-		spin_unlock_irqrestore(&emac->cmd_lock, flags);
-		/* Typically firmware command response come in less than 20
-		 * msec. But to be safe, wait for about 150 msec.
-		 */
-		mdelay(10);
-		if (retry--) {
-			goto again;
-		} else {
-			netdev_err(emac->ndev,
-				   "max retry reached, no cmd lock\n");
-			return -EBUSY;
-		}
-	} else {
-		emac->fw_cmd_in_progress = true;
-		spin_unlock_irqrestore(&emac->cmd_lock, flags);
-	}
+	netdev_dbg(emac->ndev, "Sending cmd %x\n", cmd);
 
+	/* only one command at a time allowed to firmware */
+	mutex_lock(&emac->cmd_lock);
 	data[0] = cpu_to_le32(cmd);
 
 	/* Map the linear buffer */
@@ -512,7 +498,8 @@ again:
 	if (dma_mapping_error(dev, buf_dma)) {
 		netdev_err(emac->ndev, "cmd %x: failed to map cmd buffer\n",
 			   cmd);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto err_unlock;
 	}
 
 	tx_chn = &emac->tx_chns;
@@ -522,7 +509,8 @@ again:
 		netdev_err(emac->ndev,
 			   "cmd %x: failed to allocate descriptor\n", cmd);
 		dma_unmap_single(dev, buf_dma, pkt_len, DMA_TO_DEVICE);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err_unlock;
 	}
 
 	cppi5_hdesc_init(first_desc, CPPI5_INFO0_HDESC_EPIB_PRESENT,
@@ -546,19 +534,18 @@ again:
 		netdev_err(emac->ndev, "cmd %x: push failed: %d\n", cmd, ret);
 		goto free_desc;
 	}
-
 	ret = wait_for_completion_timeout(&emac->cmd_complete,
 					  msecs_to_jiffies(100));
 	if (!ret)
-		netdev_err(emac->ndev, "command completion timeout\n");
+		netdev_err(emac->ndev, "cmd %x: completion timeout\n", cmd);
 
-	spin_lock_irqsave(&emac->cmd_lock, flags);
-	emac->fw_cmd_in_progress = false;
-	spin_unlock_irqrestore(&emac->cmd_lock, flags);
+	mutex_unlock(&emac->cmd_lock);
 
 	return ret;
 free_desc:
 	prueth_xmit_free(tx_chn, dev, first_desc);
+err_unlock:
+	mutex_unlock(&emac->cmd_lock);
 
 	return ret;
 }
@@ -566,61 +553,27 @@ free_desc:
 static void emac_change_port_speed_duplex(struct prueth_emac *emac,
 					  bool full_duplex, int speed)
 {
-	u32 cmd = ICSSG_FW_PSTATE_SPEED_DUPLEX, rgmii_cfg;
+	u32 cmd = ICSSG_PSTATE_SPEED_DUPLEX_CMD, val;
 	struct prueth *prueth = emac->prueth;
-	int slice = prueth_emac_slice(emac), rgmii_speed;
-	bool rgmii_full_duplex;
+	int slice = prueth_emac_slice(emac);
 
-	rgmii_cfg = icssg_get_rgmii_cfg_speed_duplex_val(prueth->miig_rt,
-							 slice);
+	val = icssg_rgmii_get_speed(prueth->miig_rt, slice);
+	/* firmware expects full duplex settings in bit 2-1 */
+	val <<= 1;
+	cmd |= val;
 
-	rgmii_full_duplex = (rgmii_cfg & RGMII_CFG_RGMII_FULLDUPLEX) >>
-					RGMII_CFG_RGMII_FULLDUPLEX_SHIFT;
-
-	if (rgmii_full_duplex != full_duplex) {
-		netdev_warn(emac->ndev,
-			    "RGMII Duplex bits doesn't match with Phy\n");
-		return;
-	}
-
-	rgmii_speed = rgmii_cfg >> 1;
-	switch (speed) {
-	case SPEED_1000:
-		if ((rgmii_speed & RGMII_CFG_RGMII_SPEED_MASK) !=
-				RGMII_CFG_RGMII_SPEED_1G)
-			goto speed_mismatch;
-		break;
-
-	case SPEED_100:
-		if ((rgmii_speed & RGMII_CFG_RGMII_SPEED_MASK) !=
-				RGMII_CFG_RGMII_SPEED_100M)
-			goto speed_mismatch;
-		break;
-
-	case SPEED_10:
-		if ((rgmii_speed & RGMII_CFG_RGMII_SPEED_MASK) !=
-				RGMII_CFG_RGMII_SPEED_10M)
-			goto speed_mismatch;
-		break;
-	default:
-		/* Do nothing */
-		return;
-	}
-
-	cmd |= (rgmii_cfg & RGMII_CFG_RGMII_SPEED_DUPLEX_MASK);
+	val = icssg_rgmii_get_fullduplex(prueth->miig_rt, slice);
+	/* firmware expects full duplex settings in bit 3 */
+	val <<= 3;
+	cmd |= val;
 	emac_send_command(emac, cmd);
-
-	return;
-
-speed_mismatch:
-	netdev_warn(emac->ndev, "RGMII Duplex bits doesn't match with Phy\n");
 }
 
 static int emac_shutdown(struct net_device *ndev)
 {
 	struct prueth_emac *emac = netdev_priv(ndev);
 
-	return emac_send_command(emac, ICSSG_FW_SHUTDOWN_CMD);
+	return emac_send_command(emac, ICSSG_SHUTDOWN_CMD);
 }
 
 /**
@@ -817,7 +770,7 @@ static int emac_tx_complete_packets(struct prueth_emac *emac, int budget)
 		desc_tx = k3_knav_pool_dma2virt(tx_chn->desc_pool, desc_dma);
 		swdata = cppi5_hdesc_get_swdata(desc_tx);
 
-		/* was this shutdown cmd's TX complete? */
+		/* was this command's TX complete? */
 		if (*(swdata) == emac->cmd_data) {
 			prueth_xmit_free(tx_chn, dev, desc_tx);
 			budget++;	/* not a data packet */
@@ -990,19 +943,19 @@ static irqreturn_t prueth_rx_mgm_irq_thread(int irq, void *dev_id)
 		case PRUETH_RX_MGM_FLOW_RESPONSE:
 			/* Process command response */
 			rsp = le32_to_cpu(*(u32 *)skb->data);
-			if ((rsp & 0xffff0000) == ICSSG_FW_SHUTDOWN_CMD) {
-				netdev_info(emac->ndev,
-					    "F/w Shutdown cmd resp %x\n", rsp);
+			if ((rsp & 0xffff0000) == ICSSG_SHUTDOWN_CMD) {
+				netdev_dbg(emac->ndev,
+					   "f/w Shutdown cmd resp %x\n", rsp);
 				complete(&emac->cmd_complete);
 			} else if ((rsp & 0xffff0000) ==
-				ICSSG_FW_PSTATE_SPEED_DUPLEX) {
-				netdev_info(emac->ndev,
-					    "F/w Speed/Duplex cmd rsp %x\n",
+				ICSSG_PSTATE_SPEED_DUPLEX_CMD) {
+				netdev_dbg(emac->ndev,
+					   "f/w Speed/Duplex cmd rsp %x\n",
 					    rsp);
 				complete(&emac->cmd_complete);
 			} else {
-				netdev_info(emac->ndev, "F/w cmd rsp %x\n",
-					    rsp);
+				netdev_err(emac->ndev, "Unknown f/w cmd rsp %x\n",
+					   rsp);
 			}
 			break;
 		case PRUETH_RX_MGM_FLOW_TIMESTAMP:
@@ -1046,6 +999,16 @@ static void icssg_config_set(struct prueth *prueth, int slice)
 	memcpy_toio(va, &prueth->config[slice], sizeof(prueth->config[slice]));
 }
 
+static void icssg_config_half_duplex(struct prueth *prueth, int slice)
+{
+	void __iomem *va = prueth->shram.va +
+				slice * ICSSG_CONFIG_OFFSET_SLICE1;
+	struct icssg_config *config = (struct icssg_config *)va;
+	u32 val = get_random_int();
+
+	writel(val, &config->rand_seed);
+}
+
 static int prueth_emac_start(struct prueth *prueth, struct prueth_emac *emac)
 {
 	struct device *dev = prueth->dev;
@@ -1067,7 +1030,6 @@ static int prueth_emac_start(struct prueth *prueth, struct prueth_emac *emac)
 	config->num_tx_threads = 0;
 	config->rx_flow_id = emac->rx_flow_id_base; /* flow id for host port */
 	config->rx_mgr_flow_id = emac->rx_mgm_flow_id_base; /* for mgm ch */
-	config->rand_seed = get_random_int();
 
 	/* set buffer sizes for the pools. 0-7 are not used for dual-emac */
 	for (i = PRUETH_EMAC_BUF_POOL_START;
@@ -1122,9 +1084,20 @@ static void emac_set_default_mii_config(struct prueth_emac *emac)
 	struct prueth *prueth = emac->prueth;
 	int slice = prueth_emac_slice(emac);
 
-	icssg_update_rgmii_cfg(prueth->miig_rt, SPEED_10,
-			       false, slice);
-	icssg_update_mii_rt_cfg(prueth->mii_rt, SPEED_10, slice);
+	if (emac->in_band) {
+		/* 10M, full duplex */
+		icssg_rgmii_cfg_set_inband(prueth->miig_rt, slice);
+		icssg_update_rgmii_cfg(prueth->miig_rt, false, false, slice);
+		icssg_update_mii_rt_cfg(prueth->mii_rt, SPEED_10, slice);
+		emac->duplex = DUPLEX_HALF;
+		emac->speed = SPEED_10;
+	} else {
+		/* 1G, half duplex */
+		icssg_update_rgmii_cfg(prueth->miig_rt, true, true, slice);
+		icssg_update_mii_rt_cfg(prueth->mii_rt, SPEED_1000, slice);
+		emac->duplex = DUPLEX_FULL;
+		emac->speed = SPEED_1000;
+	}
 }
 
 /* called back by PHY layer if there is change in link state of hw port*/
@@ -1132,9 +1105,9 @@ static void emac_adjust_link(struct net_device *ndev)
 {
 	struct prueth_emac *emac = netdev_priv(ndev);
 	struct phy_device *phydev = emac->phydev;
+	bool gig_en = false, full_duplex = false;
 	struct prueth *prueth = emac->prueth;
 	int slice = prueth_emac_slice(emac);
-	bool full_duplex = false;
 	bool new_state = false;
 	unsigned long flags;
 
@@ -1155,9 +1128,6 @@ static void emac_adjust_link(struct net_device *ndev)
 	} else if (emac->link) {
 		new_state = true;
 		emac->link = 0;
-		/* defaults for no link */
-		emac->speed = SPEED_10;
-		emac->duplex = DUPLEX_HALF;
 	}
 
 	if (new_state) {
@@ -1166,39 +1136,39 @@ static void emac_adjust_link(struct net_device *ndev)
 		/* update RGMII and MII configuration based on PHY negotiated
 		 * values
 		 */
+		spin_lock_irqsave(&emac->lock, flags);
 		if (emac->link) {
+			if (phydev->speed == SPEED_1000)
+				gig_en = true;
+
 			if (phydev->duplex == DUPLEX_FULL)
 				full_duplex = true;
 
-			spin_lock_irqsave(&emac->lock, flags);
-			if (!full_duplex) {
-				void __iomem *va = prueth->shram.va +
-					slice * ICSSG_CONFIG_OFFSET_SLICE1;
-				struct icssg_config *config =
-					(struct icssg_config *)va;
-				u32 val = get_random_int();
-
-				writel(val, &config->rand_seed);
-			}
+			if (!full_duplex && emac->half_duplex)
+				icssg_config_half_duplex(prueth, slice);
 
 			/* Set the RGMII cfg for gig en and full duplex */
-			icssg_update_rgmii_cfg(prueth->miig_rt, emac->speed,
+			if (phy_interface_mode_is_rgmii(emac->phy_if) &&
+			    emac->in_band)
+				icssg_rgmii_cfg_set_inband(prueth->miig_rt,
+							   slice);
+			icssg_update_rgmii_cfg(prueth->miig_rt, gig_en,
 					       full_duplex, slice);
 
 			/* update the Tx IPG based on 100M/1G speed */
-			icssg_update_mii_rt_cfg(prueth->mii_rt, emac->speed,
-						slice);
-			spin_unlock_irqrestore(&emac->lock, flags);
-
-			/* send command to firmware to change speed and duplex
-			 * setting.
-			 */
-			emac_change_port_speed_duplex(emac, full_duplex,
-						      emac->speed);
-
+			icssg_update_mii_rt_cfg(prueth->mii_rt,
+						emac->speed, slice);
 		} else {
 			emac_set_default_mii_config(emac);
 		}
+		spin_unlock_irqrestore(&emac->lock, flags);
+
+		/* send command to firmware to change speed and duplex
+		 * setting when link is up.
+		 */
+		if (emac->link)
+			emac_change_port_speed_duplex(emac, full_duplex,
+						      emac->speed);
 	}
 
 	if (emac->link) {
@@ -1211,7 +1181,6 @@ static void emac_adjust_link(struct net_device *ndev)
 		netif_carrier_off(ndev);
 		netif_tx_stop_all_queues(ndev);
 	}
-
 }
 
 static int emac_napi_rx_poll(struct napi_struct *napi_rx, int budget)
@@ -1338,6 +1307,7 @@ static int emac_ndo_open(struct net_device *ndev)
 
 	emac_set_default_mii_config(emac);
 
+	/* Get attached phy details */
 	phy_attached_info(emac->phydev);
 
 	/* start PHY */
@@ -1526,7 +1496,17 @@ static void emac_ndo_set_rx_mode(struct net_device *ndev)
 		return;
 	}
 
-	icssg_class_default(prueth->miig_rt, slice, allmulti);
+	if (allmulti) {
+		icssg_class_default(prueth->miig_rt, slice, 1);
+		return;
+	}
+
+	icssg_class_default(prueth->miig_rt, slice, 0);
+	if (!netdev_mc_empty(ndev)) {
+		/* program multicast address list into Classifier */
+		icssg_class_add_mcast(prueth->miig_rt, slice, ndev);
+		return;
+	}
 }
 
 static int emac_set_timestamp_mode(struct prueth_emac *emac,
@@ -1688,7 +1668,7 @@ static int prueth_netdev_init(struct prueth *prueth,
 	emac->port_id = port;
 	emac->msg_enable = netif_msg_init(debug_level, PRUETH_EMAC_DEBUG);
 	spin_lock_init(&emac->lock);
-	spin_lock_init(&emac->cmd_lock);
+	mutex_init(&emac->cmd_lock);
 
 	emac->phy_node = of_parse_phandle(eth_node, "phy-handle", 0);
 	if (!emac->phy_node) {
@@ -1710,11 +1690,25 @@ static int prueth_netdev_init(struct prueth *prueth,
 		}
 	}
 
+	emac->half_duplex = false;
+	if (of_property_read_bool(eth_node, "enable-half-duplex"))
+		emac->half_duplex = true;
+
 	emac->phy_if = of_get_phy_mode(eth_node);
 	if (emac->phy_if < 0) {
 		dev_err(prueth->dev, "could not get phy-mode property\n");
 		ret = emac->phy_if;
 		goto free;
+	}
+
+	emac->in_band = false;
+	if (phy_interface_mode_is_rgmii(emac->phy_if)) {
+		const char *managed;
+
+		ret = of_property_read_string(eth_node, "managed", &managed);
+		/* Support 10M if managed = in-band-status in eth DT node */
+		if (ret >= 0 && managed && !strcmp(managed, "in-band-status"))
+			emac->in_band = true;
 	}
 
 	/* connect PHY */
@@ -1731,6 +1725,21 @@ static int prueth_netdev_init(struct prueth *prueth,
 	emac->phydev->supported &= ~(SUPPORTED_1000baseT_Half |
 				     SUPPORTED_Pause |
 				     SUPPORTED_Asym_Pause);
+
+	/* If in-band mode is not set, don't advertise 10M features.
+	 * Similary if half-duplex not set, disable that as well.
+	 */
+	if (emac->half_duplex) {
+		if (!emac->in_band)
+			emac->phydev->supported &= ~(PHY_10BT_FEATURES);
+	} else {
+		if (!emac->in_band)
+			emac->phydev->supported &= ~(PHY_10BT_FEATURES);
+		else
+			emac->phydev->supported &= ~(SUPPORTED_10baseT_Half);
+		emac->phydev->supported &= ~(SUPPORTED_100baseT_Half);
+	}
+
 	emac->phydev->advertising = emac->phydev->supported;
 
 	/* get mac address from DT and set private and netdev addr */
