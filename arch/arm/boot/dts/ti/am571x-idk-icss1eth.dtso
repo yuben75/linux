@@ -64,14 +64,10 @@
 	reset-delay-us = <2>;   /* PHY datasheet states 1uS min */
 	pruss1_eth0_phy: ethernet-phy@0 {
 		reg = <0>;
-		interrupt-parent = <&gpio3>;
-		interrupts = <28 IRQ_TYPE_EDGE_FALLING>;
 	};
 
 	pruss1_eth1_phy: ethernet-phy@1 {
 		reg = <1>;
-		interrupt-parent = <&gpio3>;
-		interrupts = <29 IRQ_TYPE_EDGE_FALLING>;
 	};
 };
 
