@@ -1532,19 +1532,29 @@ static enum hrtimer_restart prueth_timer(struct hrtimer *timer)
 
 	for (mac = PRUETH_MAC0; mac <= PRUETH_MAC1; mac++) {
 		emac = prueth->emac[mac];
-		if (emac->port_id == PRUETH_PORT_MII0)
-			dram = prueth->mem[PRUETH_MEM_DRAM0].va;
-		else
-			dram = prueth->mem[PRUETH_MEM_DRAM1].va;
+		if (!(prueth->emac_configured & BIT(emac->port_id)))
+			break; /* port not enabled */
 
-		if ((prueth->emac_configured & BIT(emac->port_id)) &&
-		    (emac->nsp_credit & PRUETH_NSP_EN_MASK)) {
-			if (!--emac->nsp_timer_count) {
-				writel(emac->nsp_credit,
-				       dram + STORM_PREVENTION_OFFSET);
-				emac->nsp_timer_count =
-				       PRUETH_DEFAULT_NSP_TIMER_COUNT;
+		dram = emac->prueth->mem[emac->dram].va;
+
+		if (!--emac->nsp_timer_count) {
+			if ((emac->nsp_credit_bc & PRUETH_NSP_EN_MASK)) {
+				writel(emac->nsp_credit_bc,
+				       dram + STORM_PREVENTION_OFFSET_BC);
 			}
+
+			if ((emac->nsp_credit_mc & PRUETH_NSP_EN_MASK)) {
+				writel(emac->nsp_credit_mc,
+				       dram + STORM_PREVENTION_OFFSET_MC);
+			}
+
+			if ((emac->nsp_credit_uc & PRUETH_NSP_EN_MASK)) {
+				writel(emac->nsp_credit_uc,
+				       dram + STORM_PREVENTION_OFFSET_UC);
+			}
+
+			emac->nsp_timer_count =
+				       PRUETH_DEFAULT_NSP_TIMER_COUNT;
 		}
 	}
 
@@ -5226,7 +5236,9 @@ static const struct {
 	{"excessColl", PRUETH_STAT_OFFSET(excess_coll)},
 
 	{"rxMisAlignmentFrames", PRUETH_STAT_OFFSET(rx_misalignment_frames)},
-	{"stormPrevCounter", PRUETH_STAT_OFFSET(stormprev_counter)},
+	{"stormPrevCounterBC", PRUETH_STAT_OFFSET(stormprev_counter_bc)},
+	{"stormPrevCounterMC", PRUETH_STAT_OFFSET(stormprev_counter_mc)},
+	{"stormPrevCounterUC", PRUETH_STAT_OFFSET(stormprev_counter_uc)},
 	{"macRxError", PRUETH_STAT_OFFSET(mac_rxerror)},
 	{"SFDError", PRUETH_STAT_OFFSET(sfd_error)},
 	{"defTx", PRUETH_STAT_OFFSET(def_tx)},
