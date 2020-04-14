@@ -4091,24 +4091,28 @@ static int emac_ndo_open(struct net_device *ndev)
 
 		if (ret) {
 			dev_err(&ndev->dev, "hostinit failed: %d\n", ret);
-			return ret;
+			goto free_mutex;
 		}
 
 		if (PRUETH_HAS_RED(prueth)) {
 			prueth->mac_queue = kmalloc(sizeof(struct nt_queue_t),
 						    GFP_KERNEL);
+			if (!prueth->mac_queue) {
+				ret = -ENOMEM;
+				goto free_mutex;
+			}
 			prueth->nt = kmalloc(sizeof(*prueth->nt),
 					     GFP_KERNEL);
-			if (!prueth->mac_queue || !prueth->nt) {
+			if (!prueth->nt) {
 				ret = -ENOMEM;
-				return ret;
+				goto free_mac_queue;
 			}
 		}
 
 		if (PRUETH_HAS_RED(prueth)) {
 			ret = prueth_hsr_prp_debugfs_init(prueth);
 			if (ret)
-				return ret;
+				goto free_nt;
 		}
 
 		if (PRUETH_IS_SWITCH(prueth)) {
@@ -4379,7 +4383,18 @@ clean_sw_fdb:
 clean_debugfs_hsr_prp:
 	if (PRUETH_HAS_RED(prueth))
 		prueth_hsr_prp_debugfs_term(prueth);
-
+free_mac_queue:
+	if (PRUETH_HAS_RED(prueth)) {
+		kfree(prueth->mac_queue);
+		prueth->mac_queue = NULL;
+	}
+free_nt:
+	if (PRUETH_HAS_RED(prueth)) {
+		kfree(prueth->nt);
+		prueth->nt = NULL;
+	}
+free_mutex:
+	mutex_unlock(&prueth->mlock);
 	return ret;
 }
 
